@@ -202,7 +202,9 @@ def test_two_dvr_files_remux_to_six_seconds_and_ninety_decodable_frames(mux_pipe
     assert_fragmented_mp4(content)
     frame_count, seconds = decode_mp4(pipeline, content)
     assert frame_count == 90
-    assert seconds == pytest.approx(6, abs=1 / FPS)
+    # FFmpeg builds report either the end time or the last frame's PTS. Allow
+    # one frame plus microsecond-report rounding; frame counts remain exact.
+    assert seconds == pytest.approx(6, abs=1 / FPS + 0.001)
     assert headers['X-VWSHub-Archive-Channel'] == '2'
     assert headers['X-VWSHub-Archive-Frame-Rate'] == str(FPS)
     assert pipeline.calls == [
@@ -224,7 +226,7 @@ def test_download_trims_selected_cross_file_range_and_releases_slot(mux_pipeline
     assert float(command[command.index('-ss') + 1]) == 2
     frame_count, seconds = decode_mp4(pipeline, content)
     assert frame_count == 45
-    assert seconds == pytest.approx(3, abs=1 / FPS)
+    assert seconds == pytest.approx(3, abs=1 / FPS + 0.001)
     assert pipeline.calls == [
         (pipeline.records[0]['FilePath'], start, MIDDLE, 2),
         (pipeline.records[1]['FilePath'], MIDDLE, end, 2),
