@@ -12,7 +12,7 @@
   },
   "files_sha256": {
     ".gitattributes": "6809b6424c60e67da82315d72c96fdb0c25feedd77c501824673d4c9f76a7bc2",
-    ".github/workflows/tests.yml": "881178a736f4f1090eabba9166fc4bb2d77764685de1ba801e098f1cca7d4b9e",
+    ".github/workflows/tests.yml": "89bb4dc80635c8e3dcd4a9f2cb03ed51c71b25051a74136449fa2e7c4ecc0346",
     ".gitignore": "4112da3c0bb902ea3cb9fed1b1a3a27c60718b90dc81fb0cd5853152f6bfc23b",
     "CHANGELOG.md": "842e0b23306494e7f792e34f3a1e3dd8c4790dde3ec73fc6698cf349807a41dc",
     "README.md": "c82e4dfa64eb67e06b123f58521a03fe15f109fda0f01a84e307f6f1b05389c5",
@@ -44,7 +44,7 @@
     "tests/test_core.py": "0815af1b13a034dd7441b148c5a5c7c05397bcc3554a09e928a55e1650c82fa0",
     "tests/test_devices.py": "bf559cdd714aa62cd93edbf4568be0f9926ae4d8652fd0d1a213944a2dd8f839",
     "tests/test_media.py": "d1ba251fe03636e9cf8f0a40abeda128083661a1af754a6e92f534ca5ee28685",
-    "tests/test_mux_integration.py": "fdbc17d0acd0abc90b55908371ca747115b9ea349e5df72baceec8b1b26a37c5",
+    "tests/test_mux_integration.py": "4ab93dc7ff566a23aac8ff631eb2e51d491c6b5e317479294abc9df45003977d",
     "tests/view_model.test.cjs": "f87c9b6f8d5e9c02e631302fd09b844111329cd135aa1ee891d6bc52bccb02ac"
   }
 }
