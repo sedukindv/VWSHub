@@ -1,0 +1,63 @@
+# Runtime credentials and application state
+/data/
+/users.json
+/groups.json
+/devices.json
+/camconfig.json
+/settings.json
+/branding.json
+/app_info.json
+/vms_data.json
+/.camkey
+/.flask_secret
+.env
+.env.*
+!.env.example
+vwshub-backup-*.zip
+*backup*.zip
+/backups/
+
+# Local views and exports
+vwshub-view*.json
+vwshub-groups*.json
+*.mp4
+*.mkv
+*.webm
+*.ts
+*.m3u8
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+htmlcov/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Node/tests/build artifacts
+node_modules/
+coverage/
+test-results/
+playwright-report/
+dist/
+build/
+outputs/
+*.log
+*.jsonl
+*.tmp
+.qa-tests/
+.v7-core-tests/
+.v7-device-tests/
+.v7-media-tests/
+
+# Editor/OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
