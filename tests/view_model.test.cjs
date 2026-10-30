@@ -82,3 +82,12 @@ test('large version 2 views retain all 4096 positions while legacy views keep th
  assert.throws(()=>V.serialize('64',Array(4097).fill(null)));
  assert.equal(V.fit(4096),'64');
 });
+
+test('independent live consumers work without randomUUID on LAN HTTP',()=>{
+ const crypto=require('node:crypto').webcrypto;
+ const source={getRandomValues:crypto.getRandomValues.bind(crypto)};
+ assert.equal(source.randomUUID,undefined);
+ const first=V.consumerId(source),second=V.consumerId(source);
+ assert.match(first,/^[0-9a-f]{32}$/);assert.match(second,/^[0-9a-f]{32}$/);
+ assert.notEqual(first,second);
+});
