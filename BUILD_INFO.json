@@ -34,7 +34,7 @@
   },
   "files_sha256": {
     ".gitattributes": "6809b6424c60e67da82315d72c96fdb0c25feedd77c501824673d4c9f76a7bc2",
-    ".github/workflows/tests.yml": "6df2765c45611ca5e0804d3e3b6f66c322c180d25c68db809be6c2e320b263f8",
+    ".github/workflows/tests.yml": "89bb4dc80635c8e3dcd4a9f2cb03ed51c71b25051a74136449fa2e7c4ecc0346",
     ".gitignore": "4112da3c0bb902ea3cb9fed1b1a3a27c60718b90dc81fb0cd5853152f6bfc23b",
     "app.py": "460bd00330832c6dedadfc9ede41b5dc245f510b85631363398cc41425f13f0b",
     "CHANGELOG.md": "96bebd53193c073e2715d5e1fc372d4210ee39edf0e69dddc4ee5a21b8d955b3",
