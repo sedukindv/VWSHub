@@ -1,4 +1,4 @@
-VWSHub 0.7 — third-party notices
+VWSHub 0.8 — third-party notices
 Python packages are installed separately; their own licenses remain applicable.
 
 

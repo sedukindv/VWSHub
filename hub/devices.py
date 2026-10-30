@@ -22,6 +22,14 @@ import struct
 from flask import jsonify, request
 
 
+def site_device_name(runtime,cam):
+    store=getattr(runtime,"store",None)
+    if store and hasattr(store,"get_recorders"):
+        recorder=next((r for r in store.get_recorders() if r.get("id")==cam.get("recorder_id")),None)
+        if recorder:return recorder.get("name")
+    return cam.get("name")
+
+
 def plain(value):
     """Serialize Zeep objects without exposing credentials or internal transport state."""
     if value is None or isinstance(value, (str, bool, int, float)):
@@ -93,6 +101,8 @@ def register_devices(app, runtime):
             cam = get_camera(str(data.get("cam_id") or ""))
             if not cam:
                 return jsonify(error="Устройство не найдено"), 404
+            began = time.monotonic()
+            journal = getattr(runtime, "hardware", None)
             try:
                 # Zeep clients/requests Sessions are shared only under this device
                 # lock. Reuse discovery between PTZ renewals instead of reconnecting
@@ -102,13 +112,16 @@ def register_devices(app, runtime):
                     device_lock = device_locks.setdefault(physical_key, threading.RLock())
                 with device_lock:
                     result=fn(cam,data)
+                    if journal: journal.record("device.operation", cam, operation=fn.__name__, duration_ms=round((time.monotonic()-began)*1000))
                     if isinstance(result,tuple):return jsonify(result[0]),result[1]
                     return jsonify(success=True, **result)
             except ValueError as exc:
+                if journal: journal.record("device.rejected", cam, level="warning", operation=fn.__name__, error_type=type(exc).__name__)
                 return jsonify(error=str(exc)), 400
             except NotImplementedError as exc:
                 return jsonify(error=str(exc)), 501
             except Exception as exc:
+                if journal: journal.record("device.failed", cam, level="error", operation=fn.__name__, error_type=type(exc).__name__, duration_ms=round((time.monotonic()-began)*1000))
                 # SOAP/FFmpeg errors can contain entire credential-bearing URLs.
                 logger.warning("Device operation %s failed on %s (%s)", fn.__name__, cam.get("id"), type(exc).__name__)
                 return jsonify(error="Устройство не выполнило операцию. Проверьте подключение, права и поддержку функции."), 502
@@ -677,9 +690,9 @@ def register_xm_routes(app,runtime,endpoint,dvr_connect,client_for,service_for):
                 if data.get("confirm") is not True:raise ValueError("Подтвердите применение настроек устройства")
                 if data.get("revision")!=revision:return {"error":"Настройки устройства изменились. Обновите форму перед сохранением."},409
                 updated=patch_config(current,section,data["changes"],selected,ability)
-                if section in {"network","dhcp","dns","digital"} and data.get("device_name")!=cam.get("name"):
+                if section in {"network","dhcp","dns","digital"} and data.get("device_name") not in (cam.get("name"),site_device_name(runtime,cam)):
                     raise ValueError("Для изменения сети/цифровых каналов введите имя устройства")
-                if section=="maintenance" and any("AutoDeleteFilesDays" in c["path"] and float(c.get("value",0))>0 for c in data["changes"]) and data.get("device_name")!=cam.get("name"):
+                if section=="maintenance" and any("AutoDeleteFilesDays" in c["path"] and float(c.get("value",0))>0 for c in data["changes"]) and data.get("device_name") not in (cam.get("name"),site_device_name(runtime,cam)):
                     raise ValueError("Для включения автоматического удаления архива введите имя устройства")
                 check_dvr_reply(dvr.set_info(name,updated))
                 runtime.audit("device.config",f"device={cam['id']}; section={section}; channel={channel}")
@@ -709,7 +722,7 @@ def register_xm_routes(app,runtime,endpoint,dvr_connect,client_for,service_for):
     @endpoint
     def format_storage(cam,data):
         if cam.get("protocol")!="dvrip":raise NotImplementedError("Форматирование поддерживается по DVRIP после проверки носителя")
-        if data.get("confirm") is not True or data.get("confirmation")!="ERASE_ALL_RECORDINGS" or data.get("device_name")!=cam.get("name"):
+        if data.get("confirm") is not True or data.get("confirmation")!="ERASE_ALL_RECORDINGS" or data.get("device_name") not in (cam.get("name"),site_device_name(runtime,cam)):
             raise ValueError("Подтвердите удаление записей всех камер и введите точное имя устройства")
         serial=int(number(data.get("serial"),"Носитель",0,255,True));partition=int(number(data.get("partition"),"Раздел",0,255,True))
         dvr=dvr_connect(cam)
@@ -794,7 +807,7 @@ def register_xm_routes(app,runtime,endpoint,dvr_connect,client_for,service_for):
         settings=data.get("settings")
         if settings is not None:
             if not isinstance(settings,dict) or set(settings)-{"token","dhcp","address","prefix","gateway","dns"}:raise ValueError("Неизвестные сетевые параметры")
-            if data.get("confirm") is not True or data.get("device_name")!=cam.get("name"):raise ValueError("Подтвердите смену сети и введите имя устройства")
+            if data.get("confirm") is not True or data.get("device_name") not in (cam.get("name"),site_device_name(runtime,cam)):raise ValueError("Подтвердите смену сети и введите имя устройства")
             token=str(settings.get("token",""))
             if not any(str(field(i,"token",""))==token for i in interfaces):raise ValueError("Сетевой интерфейс не найден")
             dhcp=settings.get("dhcp")
