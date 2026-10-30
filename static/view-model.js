@@ -110,5 +110,11 @@
       y: Math.max(-maxY, Math.min(maxY, Number(y) || 0)),
     };
   }
-  return { layouts, layout, fit, normalize, serialize, pan };
+  function consumerId(source) {
+    // getRandomValues also works on ordinary HTTP origins in a local network.
+    return Array.from(source.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
+  return { layouts, layout, fit, normalize, serialize, pan, consumerId };
 });
