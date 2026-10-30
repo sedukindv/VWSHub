@@ -6,7 +6,7 @@
   "source_base_commit": "e49f31633d0654f51a3bba388ad07530d5b2fb6c",
   "validation": {
     "python_passed": 147,
-    "javascript_passed": 71,
+    "javascript_passed": 72,
     "real_ffmpeg_tests": 3,
     "ffmpeg_test_version": "7.1",
     "real_devices_tested": false,
@@ -60,8 +60,8 @@
     "static/devices.js": "760fb91ffd226a360eedf1c670261d6d53717ee259da6d462a6b83dae84c897b",
     "static/hls.min.js": "a12e7ee1cd64a69dcdb314157e45dafcba705bfb0b1440b7935cb265d374423e",
     "static/live.css": "612ca99ab15d99c79418ff69e0ecee4c4bcb2aaa8f7b8e81dd967de08aada417",
-    "static/live.js": "dffd4860c277ac287da7e5662c16de9e64aa4aac38c2da6ea6aa07885cb4ce1a",
-    "static/view-model.js": "f02487707daec4ca41ec5cbc34765999f901f3bccda68ef464f7c3f81e152ebc",
+    "static/live.js": "d63fec8751ca28aeae1d20d63b4b03c034e9bb5648c0fda3f746eda1d254b6ad",
+    "static/view-model.js": "edb4af0abd9ad080726573d72cefa3be4dbb8a9f233f03413f0cd2292b8bbea2",
     "static/workspace.css": "a1ce595e59e64d3726faf41bcb9d7253a53b4693d76d712675aaddc06757f001",
     "templates/index.html": "10cd12f33523b8735f1db4e148b91a799a76519ec368a00c1476ad6ceb1f46c7",
     "templates/login.html": "f7c7eda46dba8aec4d1ae04bb4bd5272a99e956c5ced3396eb07aff0d1687488",
@@ -72,7 +72,7 @@
     "tests/test_devices.py": "bf559cdd714aa62cd93edbf4568be0f9926ae4d8652fd0d1a213944a2dd8f839",
     "tests/test_media.py": "7ee3e4892e433fa68de34ee6c8325a83581947b33c3d31ba4e50739220f43be3",
     "tests/test_mux_integration.py": "4ab93dc7ff566a23aac8ff631eb2e51d491c6b5e317479294abc9df45003977d",
-    "tests/view_model.test.cjs": "e24d10090b4d8e9b8c4bb5e76a4514b645cf70861c39f809f1bbc6bf032018bd",
+    "tests/view_model.test.cjs": "e2c8d4c004e2592e39de53dc19b9d87a271e11ae08628bacf264e4dc3cf8a239",
     "THIRD_PARTY_NOTICES.txt": "14ecab368d995940ac199d7452613d3736ddc0a585e5a22d6e455e38d2393343"
   }
 }
