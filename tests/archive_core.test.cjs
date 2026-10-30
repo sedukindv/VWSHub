@@ -141,3 +141,14 @@ test('digital pan remains bounded and resetting zoom restores the entire frame',
   assert.equal(reset.scale,1);
   assert.ok(reset.x===0 && reset.y===0);
 });
+
+test('slider snaps gaps to nearest playable second and never the exclusive file end',()=>{
+ const intervals=[{start:10000,end:20000},{start:40000,end:50000}];
+ assert.equal(core.nearest(intervals,21000),19000);
+ assert.equal(core.nearest(intervals,39000),40000);
+ assert.equal(core.nearest(intervals,0),10000);
+ assert.equal(core.nearest(intervals,99999),49000);
+ assert.equal(core.nearest(intervals,15000),15000);
+ assert.equal(core.nearest([],15000),null);
+ assert.equal(core.nearest(intervals,NaN),null);
+});

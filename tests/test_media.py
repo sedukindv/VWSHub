@@ -4,6 +4,7 @@ import json
 import socket
 import struct
 import threading
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,39 @@ from unittest.mock import Mock
 import pytest
 from flask import Flask,session
 from hub import media
+
+
+def test_live_leases_are_isolated_between_tabs_of_the_same_account(app_media,monkeypatch):
+    app,service,_,_=app_media
+    app.extensions['vwshub'].current_user=lambda:{'role':'viewer','username':'same_account'}
+    directory=service.live.root/'tab-test';directory.mkdir()
+    (directory/'index.m3u8').write_text('#EXTM3U\n#EXTINF:2,\nseg_000001.ts\n')
+    (directory/'seg_000001.ts').write_bytes(b'synthetic segment')
+    process=Mock();process.poll.return_value=0
+    item={'process':process,'directory':directory,'leases':{}}
+    def ensure(cam,stream,consumer):
+        item['leases'][consumer]=time.monotonic();service.live.streams[(cam,stream)]=item;return item
+    monkeypatch.setattr(service.live,'ensure',ensure)
+    client=app.test_client();one='a'*32;two='b'*32
+    result=client.get('/live/ch1/main/index.m3u8?consumer='+one)
+    assert result.status_code==200 and ('seg_000001.ts?consumer='+one) in result.get_data(as_text=True)
+    assert client.get('/live/ch1/main/index.m3u8?consumer='+two).status_code==200
+    assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','consumer':one}).status_code==200
+    assert ('ch1','main') in service.live.streams and set(item['leases'])=={'same_account:'+two}
+    assert client.get('/live/ch1/main/seg_000001.ts?consumer='+two).status_code==200
+    assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','consumer':two}).status_code==200
+    assert ('ch1','main') not in service.live.streams
+
+
+def test_connection_test_uses_the_edited_rtsp_host_and_path(app_media,monkeypatch):
+    app,_,_,_=app_media
+    app.extensions['vwshub'].current_user=lambda:{'role':'admin','username':'owner'}
+    monkeypatch.setattr(media.shutil,'which',lambda _: 'synthetic-ffmpeg')
+    run=Mock(return_value=SimpleNamespace(returncode=0));monkeypatch.setattr(media.subprocess,'run',run)
+    response=app.test_client().post('/api/cameras/test',json={'id':'ch1','protocol':'onvif','ip':'192.0.2.10','port':80,
+        'rtsp_host':'198.51.100.88','rtsp_path':'/new-path','rtsp_port':8554})
+    assert response.status_code==200 and response.json['ok'] is True
+    assert '@198.51.100.88:8554/new-path' in run.call_args.args[0][run.call_args.args[0].index('-i')+1]
 
 
 @pytest.fixture

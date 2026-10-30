@@ -13,7 +13,7 @@ from werkzeug.security import generate_password_hash
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from hub.core import create_app
-from hub.store import DataStore,DataCorruptError
+from hub.store import DataStore,DataCorruptError,DEFAULT_SETTINGS
 
 @pytest.fixture
 def isolated_path():
@@ -107,7 +107,7 @@ def test_legacy_branding_migrates_without_old_default_product_name(isolated_path
     old={"site_name":name,"tagline":"Local cameras","accent":"#abcdef","animations_enabled":False}
     source=json.dumps(old);(legacy/"branding.json").write_text(source)
     store=DataStore(isolated_path/"data",legacy)
-    assert store.get_settings()["branding"]=={"name":expected,"subtitle":"Local cameras","accent":"#abcdef","motion":False,"logo":"","favicon":""}
+    assert store.get_settings()["branding"]=={**DEFAULT_SETTINGS["branding"],"name":expected,"subtitle":"Local cameras","accent":"#abcdef","motion":False,"logo":"","favicon":""}
     assert (legacy/"branding.json").read_text()==source
 
 def test_corrupt_json_is_not_silently_replaced(isolated_path):
@@ -184,11 +184,13 @@ def test_empty_password_update_and_clone_keep_encrypted_secret(owner,catalog):
 def test_device_edit_invalidates_old_live_worker_and_archive_metadata(app,owner,catalog):
     import threading
     media=Mock();media.lock=threading.RLock();media.files={("cam_a","old"):"cached",("cam_b","keep"):"cached"};media.audio_cache={"cam_a":"old","cam_b":"keep"}
+    cancel=Mock();keep=Mock();media.operations={"old":{"camera":"cam_a","cancel":cancel},"other":{"camera":"cam_b","cancel":keep}}
     app.extensions["vwshub_media"]=media
     response=owner.post("/api/cameras",json={"id":"cam_a","name":"Edited","ip":"192.0.2.3"})
     assert response.status_code==200
     assert media.live.stop.call_args_list==[call("cam_a","main"),call("cam_a","sub")]
     assert media.files=={("cam_b","keep"):"cached"} and media.audio_cache=={"cam_b":"keep"}
+    cancel.assert_called_once();keep.assert_not_called()
 
 def test_groups_import_all_or_nothing(owner,catalog):
     old=catalog.store.get_groups()
@@ -215,7 +217,7 @@ def test_settings_validate_resources_and_formats(owner):
     response=owner.post("/api/settings",json={"resources":{"profile":"maximum"},"timezone":"UTC","snapshot_format":"png"})
     assert response.status_code==200
     settings=response.get_json()["settings"]
-    assert settings["resources"]["max_live_streams"]==64 and settings["timezone"]=="UTC" and settings["version"]=="0.7"
+    assert settings["resources"]["max_live_streams"]==64 and settings["timezone"]=="UTC" and settings["version"]=="0.8"
 
 def test_branding_applies_publicly_but_svg_is_rejected(app,owner):
     assert owner.post("/api/branding",json={"name":"My Hub","accent":"#123abc","motion":False}).status_code==200
@@ -250,7 +252,7 @@ def test_manual_status_probes_only_visible_devices(app,owner,catalog,monkeypatch
     connect=Mock(return_value=fake);monkeypatch.setattr("hub.core.socket.create_connection",connect)
     response=read_only.post("/api/cameras/status",json={"camera_ids":["cam_a","cam_b"]})
     assert set(response.get_json()["status"])=={"cam_a"}
-    connect.assert_called_once_with(("192.0.2.1",34567),timeout=.9)
+    connect.assert_called_once_with(("192.0.2.1",34567),timeout=1.5)
 
 def test_origin_and_audit_redaction(owner,catalog):
     assert owner.post("/api/profile",json={"alias":"No"},headers={"Origin":"https://different.example"}).status_code==403
