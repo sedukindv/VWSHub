@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from werkzeug.security import generate_password_hash
 
 DEFAULT_SETTINGS = {
-    "branding": {"name":"VWSHub", "subtitle":"Video workspace", "logo":"", "favicon":"", "accent":"#668bff", "motion":True},
+    "branding": {"name":"VWSHub", "subtitle":"Video workspace", "logo":"", "favicon":"", "accent":"#668bff", "motion":True,
+                 "recorder_labels":"ip", "density":"comfortable", "corners":"rounded", "show_clock":True, "wall_gap":3},
+    "diagnostics":{"enabled":True},
     "timezone":"Asia/Omsk", "language":"ru", "snapshot_format":"jpeg", "archive_format":"mp4",
     "resources": {"profile":"standard", "max_live_streams":16, "max_archive_streams":4,
                   "archive_buffer_mb":16, "archive_idle_seconds":180, "ffmpeg_threads":2},
@@ -90,11 +93,13 @@ class DataStore:
         with self.lock:self._initialize(legacy_dir)
 
     def _initialize(self,legacy_dir):
+        self._recover_restore()
         self.users_file=self.base_dir/"users.json"
         self.devices_file=self.base_dir/"devices.json"
         self.cameras_file=self.devices_file
         self.groups_file=self.base_dir/"groups.json"
         self.settings_file=self.base_dir/"settings.json"
+        self.recorders_file=self.base_dir/"recorders.json"
         self.audit_file=self.base_dir/"audit.jsonl"
         self._migrate(Path(legacy_dir).resolve() if legacy_dir else self.base_dir.parent)
         self.key_file=self.base_dir/".camkey"
@@ -105,11 +110,76 @@ class DataStore:
         self.fernet=Fernet(self.key_file.read_bytes().strip())
         self.secret_file=self.base_dir/".flask_secret"
         if not self.secret_file.exists(): self._write_bytes(self.secret_file,(uuid.uuid4().hex+uuid.uuid4().hex).encode())
-        for path,default in [(self.users_file,[]),(self.devices_file,[]),(self.groups_file,[])]:
+        for path,default in [(self.users_file,[]),(self.devices_file,[]),(self.groups_file,[]),(self.recorders_file,[])]:
             if not path.exists(): self._write(path,default)
             elif not isinstance(self._read(path),list): raise DataCorruptError(f"Неверный формат {path.name}; исходник не перезаписан")
         if not self.settings_file.exists(): self._write(self.settings_file,copy.deepcopy(DEFAULT_SETTINGS))
         self._normalize_legacy()
+        self.save_devices(self.get_devices())
+
+    @staticmethod
+    def connection_key(device):
+        return "|".join([str(device.get("protocol","dvrip")),str(device.get("ip","")).lower(),str(device.get("port",34567 if device.get("protocol","dvrip")=="dvrip" else 80))])
+
+    def catalog_values(self,devices,recorder_names=None):
+        recorders=self._read(self.recorders_file);by_key={r["connection_key"]:r for r in recorders}
+        for camera in devices:
+            key=self.connection_key(camera)
+            if key not in by_key:
+                item={"id":"rec_"+hashlib.sha256(key.encode()).hexdigest()[:24],"connection_key":key,
+                      "name":("Регистратор " if camera.get("protocol","dvrip")=="dvrip" else "IP-устройство ")+str(len(recorders)+1)}
+                by_key[key]=item;recorders.append(item)
+            camera["recorder_id"]=by_key[key]["id"]
+        for recorder in recorders:
+            if recorder["connection_key"] in (recorder_names or {}):recorder["name"]=recorder_names[recorder["connection_key"]]
+        active={self.connection_key(camera) for camera in devices}
+        return devices,[r for r in recorders if r["connection_key"] in active]
+
+    def _reconcile_recorders(self,devices):
+        devices,recorders=self.catalog_values(devices)
+        if recorders!=self._read(self.recorders_file):self._write(self.recorders_file,recorders)
+        return devices
+
+    def _recover_restore(self):
+        journal=self.base_dir/".restore-journal.json"
+        if not journal.exists():return
+        try:
+            previous=json.loads(journal.read_text(encoding="utf-8"))
+            allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
+            if not isinstance(previous,dict) or set(previous)-allowed:raise ValueError()
+            for filename,encoded in previous.items():
+                if encoded is None:
+                    target=self.base_dir/filename
+                    if target.exists():target.unlink()
+                else:self._write_bytes(self.base_dir/filename,base64.b64decode(encoded,validate=True))
+            journal.unlink()
+        except Exception as exc:raise DataCorruptError("Не удалось восстановить прерванную транзакцию backup. Сохраните data и проверьте журнал восстановления") from exc
+
+    def restore(self,files):
+        allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
+        if set(files)!=allowed:raise ValueError("Неполный набор файлов восстановления")
+        self.transaction(files)
+
+    def transaction(self,files):
+        """Readers see a whole catalog; a crash rolls back the incomplete journal."""
+        allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
+        if not files or set(files)-allowed:raise ValueError("Неизвестные файлы транзакции")
+        with self.lock:
+            old={name:base64.b64encode((self.base_dir/name).read_bytes()).decode() if (self.base_dir/name).exists() else None for name in files}
+            journal=self.base_dir/".restore-journal.json"
+            self._write(journal,old)
+            try:
+                for name,content in files.items():self._write_bytes(self.base_dir/name,content)
+                self.fernet=Fernet((self.base_dir/".camkey").read_bytes().strip())
+                self._cache.clear();journal.unlink()
+            except Exception:
+                self._recover_restore();self.fernet=Fernet((self.base_dir/".camkey").read_bytes().strip());raise
+
+    def save_catalog(self,devices,groups,recorder_names=None):
+        with self.lock:
+            devices,recorders=self.catalog_values(devices,recorder_names)
+            self.transaction({name:json.dumps(value,ensure_ascii=False,allow_nan=False).encode("utf-8") for name,value in
+                              {"devices.json":devices,"groups.json":groups,"recorders.json":recorders}.items()})
 
     def _migrate(self, legacy):
         roots=list(dict.fromkeys([self.base_dir,legacy]))
@@ -207,6 +277,8 @@ class DataStore:
     get_cameras=get_devices
     def get_groups(self):
         with self.lock:return self._read(self.groups_file)
+    def get_recorders(self):
+        with self.lock:return self._read(self.recorders_file)
     def get_settings(self):
         with self.lock:
             raw=self._read(self.settings_file)
@@ -214,16 +286,22 @@ class DataStore:
             result=copy.deepcopy(DEFAULT_SETTINGS);result.update(raw)
             result["branding"]={**DEFAULT_SETTINGS["branding"],**(raw.get("branding") or {})}
             result["resources"]={**DEFAULT_SETTINGS["resources"],**(raw.get("resources") or {})}
+            result["diagnostics"]={**DEFAULT_SETTINGS["diagnostics"],**(raw.get("diagnostics") or {})}
             return result
     def save_users(self,value):
         with self.lock:self._write(self.users_file,value)
     def save_devices(self,value):
-        with self.lock:self._write(self.devices_file,value)
+        with self.lock:
+            devices,recorders=self.catalog_values(value)
+            self.transaction({name:json.dumps(data,ensure_ascii=False,allow_nan=False).encode("utf-8") for name,data in
+                              {"devices.json":devices,"recorders.json":recorders}.items()})
     save_cameras=save_devices
     def save_groups(self,value):
         with self.lock:self._write(self.groups_file,value)
     def save_settings(self,value):
         with self.lock:self._write(self.settings_file,value)
+    def save_recorders(self,value):
+        with self.lock:self._write(self.recorders_file,value)
     def enc_pwd(self,value):return "enc:"+self.fernet.encrypt(value.encode()).decode() if value else ""
     def dec_pwd(self,value):
         if not value:return ""

@@ -29,7 +29,7 @@ from werkzeug.security import check_password_hash,generate_password_hash
 
 from .store import DataStore,DataCorruptError,DEFAULT_SETTINGS,safe_image
 
-VERSION="0.7"
+VERSION="0.8"
 DEVELOPER="sedukindv"
 REPOSITORY="https://github.com/sedukindv/VWSHub"
 LOGIN_RE=re.compile(r"[A-Za-z0-9_.@-]{1,64}\Z")
@@ -39,10 +39,13 @@ def public_user(user):
     if not user:return None
     return {"username":user.get("username",""),"login":user.get("username",""),"alias":user.get("alias") or user.get("username",""),
             "avatar":user.get("avatar", ""),"role":user.get("role","viewer"),"theme":user.get("theme","auto"),"language":user.get("language","ru"),
-            "group_ids":list(user.get("group_ids",[])),"archive_access":user.get("role")=="admin" or bool(user.get("archive_access",False))}
+            "group_ids":list(user.get("group_ids",[])),"group_access":{gid:user.get("group_access",{}).get(gid,"read") for gid in user.get("group_ids",[])},
+            "archive_access":user.get("role")=="admin" or bool(user.get("archive_access",False))}
 
-def public_device(device):
-    return {key:value for key,value in device.items() if key not in {"password","password_hash","secret"}}
+def public_device(device,connection=True):
+    private={"password","password_hash","secret"}
+    if not connection:private.update({"username","rtsp_path","rtsp_sub_path","profile_token","rtsp_host"})
+    return {key:value for key,value in device.items() if key not in private}
 
 def body():
     value=request.get_json(silent=True)
@@ -86,10 +89,14 @@ class Runtime:
     def __init__(self,store):
         self.store=store;self.started=time.monotonic();self.login_attempts=defaultdict(deque);self.login_lock=threading.Lock()
         self.enc_pwd=store.enc_pwd;self.dec_pwd=store.dec_pwd
+        from .diagnostics import HardwareJournal
+        self.hardware=HardwareJournal(store)
     def current_user(self):
         if not has_request_context():return None
         if hasattr(g,"vwshub_user"):return g.vwshub_user
         name=session.get("username")
+        if session.get("auth_epoch")!=self.settings().get("auth_epoch"):
+            g.vwshub_user=None;return None
         g.vwshub_user=next((u for u in self.store.get_users() if u.get("username")==name),None) if name else None
         return g.vwshub_user
     def get_camera(self,cam_id):return next((c for c in self.store.get_devices() if c.get("id")==str(cam_id)),None)
@@ -106,6 +113,10 @@ class Runtime:
         visible={cid for group in self.store.get_groups() if group.get("id") in allowed for cid in group.get("camera_ids",[])}
         return [device for device in devices if device.get("id") in visible]
     def can_access_camera(self,user,cam_id):return any(c.get("id")==str(cam_id) for c in self.visible_devices(user))
+    def can_edit_group(self,user,group_id):
+        return bool(user and (user.get("role")=="admin" or group_id in user.get("group_ids",[]) and user.get("group_access",{}).get(group_id)=="edit"))
+    def can_edit_camera(self,user,cam_id):
+        return bool(user and (user.get("role")=="admin" or any(cam_id in g.get("camera_ids",[]) and self.can_edit_group(user,g["id"]) for g in self.store.get_groups())))
     def audit(self,action,detail=None):
         user=self.current_user()
         self.store.audit(user.get("username") if user else "system",action,detail)
@@ -118,7 +129,8 @@ def csrf_token():
 def public_settings(runtime):
     settings=runtime.settings()
     return {"version":VERSION,"developer":DEVELOPER,"repository":REPOSITORY,"timezone":settings["timezone"],"language":settings["language"],
-            "snapshot_format":settings["snapshot_format"],"archive_format":settings["archive_format"],"resource_profile":settings["resources"]["profile"]}
+            "snapshot_format":settings["snapshot_format"],"archive_format":settings["archive_format"],"resource_profile":settings["resources"]["profile"],
+            "max_live_streams":settings["resources"]["max_live_streams"]}
 
 def request_user_payload(data,existing=None):
     result=dict(existing or {})
@@ -128,12 +140,15 @@ def request_user_payload(data,existing=None):
     result["alias"]=text(data.get("alias",result.get("alias",login)),"Псевдоним",100) or login
     result["avatar"]=safe_image(data.get("avatar",result.get("avatar","")))
     result["role"]=data.get("role",result.get("role","viewer"))
-    if result["role"] not in {"admin","viewer"}:raise ValueError("Роль: admin или viewer")
+    if not isinstance(result["role"],str) or result["role"] not in {"admin","viewer"}:raise ValueError("Роль: admin или viewer")
     result["theme"]=data.get("theme",result.get("theme","auto"))
-    if result["theme"] not in {"auto","dark","light"}:raise ValueError("Неизвестная тема")
+    if not isinstance(result["theme"],str) or result["theme"] not in {"auto","dark","light"}:raise ValueError("Неизвестная тема")
     result["language"]=data.get("language",result.get("language","ru"))
-    if result["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
+    if not isinstance(result["language"],str) or result["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
     result["group_ids"]=ids(data.get("group_ids",result.get("group_ids",[])),"Группы пользователя")
+    access=data.get("group_access",{gid:level for gid,level in result.get("group_access",{}).items() if gid in result["group_ids"]})
+    if not isinstance(access,dict) or set(access)-set(result["group_ids"]) or any(not isinstance(v,str) or v not in {"read","edit"} for v in access.values()):raise ValueError("Права групп: только read/edit для назначенных групп")
+    result["group_access"]={gid:access.get(gid,"read") for gid in result["group_ids"]}
     if "archive_access" in data and not isinstance(data["archive_access"],bool):raise ValueError("archive_access: ожидается логическое значение")
     result["archive_access"]=True if result["role"]=="admin" else data.get("archive_access",result.get("archive_access",False))
     if data.get("password"):result["password_hash"]=generate_password_hash(password(data["password"]))
@@ -146,7 +161,7 @@ def validate_device(data,existing,runtime):
     host=text(source.get("ip"),"IP-адрес или имя узла",253,True)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+",host) or ".." in host:raise ValueError("Укажите IP-адрес или DNS-имя без URL и пути")
     protocol=source.get("protocol","dvrip")
-    if protocol not in {"dvrip","onvif"}:raise ValueError("Протокол: dvrip или onvif")
+    if not isinstance(protocol,str) or protocol not in {"dvrip","onvif"}:raise ValueError("Протокол: dvrip или onvif")
     # A protocol switch replaces its inherited default port, unless the caller explicitly chose a port.
     default_port=34567 if protocol=="dvrip" else 80
     port=data.get("port",default_port if existing and protocol!=existing.get("protocol") else source.get("port",default_port))
@@ -159,19 +174,34 @@ def validate_device(data,existing,runtime):
         if data["password"] or not existing:result["password"]=runtime.enc_pwd(data["password"])
     if protocol=="dvrip":result["channel"]=integer(source.get("channel",0),"Канал",0,255)
     else:
+        if source.get("rtsp_host"):
+            rtsp_host=text(source["rtsp_host"],"Узел RTSP",253,True)
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]+",rtsp_host) or ".." in rtsp_host:raise ValueError("Некорректный узел RTSP")
+            result["rtsp_host"]=rtsp_host
         for key in ("rtsp_path","rtsp_sub_path"):
             value=text(source.get(key,""),"Путь RTSP",2048)
             if "://" in value:raise ValueError("Укажите только путь RTSP без адреса и учётных данных")
             result[key]=value
     # Explicitly preserve known connection metadata without accepting arbitrary data-file fields.
     for key in ("profile_token","audio_enabled"):
-        if key in source:result[key]=source[key]
+        if key in source:
+            if key=="profile_token":result[key]=text(source[key],"Профиль ONVIF",256)
+            elif not isinstance(source[key],bool):raise ValueError("audio_enabled: ожидается логическое значение")
+            else:result[key]=source[key]
     return result
+
+
+def connection_signature(camera):
+    protocol=camera.get("protocol","dvrip");host=str(camera.get("ip","")).lower()
+    return (protocol,host,int(camera.get("port") or (34567 if protocol=="dvrip" else 80)),int(camera.get("rtsp_port") or 554),
+            str(camera.get("rtsp_host") or host).lower(),camera.get("username") or "",camera.get("password") or "",
+            int(camera.get("channel") or 0),camera.get("rtsp_path") or "",camera.get("rtsp_sub_path") or "",camera.get("profile_token") or "")
 
 def register_core(app,runtime):
     app.extensions["vwshub"]=runtime
     @app.before_request
     def protect_request():
+        if getattr(runtime,"maintenance",False) and request.endpoint!="health":return jsonify(error="Восстанавливается backup. Повторите запрос через несколько секунд"),503
         is_api=request.path.startswith("/api/")
         public=request.endpoint in {"static","login","setup","health","bootstrap","favicon"} or request.path=="/api/branding" and request.method=="GET"
         if not public:
@@ -225,7 +255,7 @@ def register_core(app,runtime):
                 if any(u.get("role")=="admin" for u in users):return jsonify(error="Первый администратор уже создан"),409
                 if any(u.get("username")==new["username"] for u in users):raise ValueError("Такой логин уже существует")
                 users.append(new);runtime.store.save_users(users)
-            session.clear();session["username"]=new["username"];session.permanent=True;csrf_token();runtime.audit("setup.admin_created")
+            session.clear();session["username"]=new["username"];session["auth_epoch"]=runtime.settings().get("auth_epoch");session.permanent=True;csrf_token();runtime.audit("setup.admin_created")
             return jsonify(success=True,user=public_user(new),csrf_token=csrf_token()) if request.is_json else redirect(url_for("index"))
         except ValueError as exc:
             return (jsonify(error=str(exc)),400) if request.is_json else (template("setup.html",error=str(exc)),400)
@@ -246,7 +276,7 @@ def register_core(app,runtime):
             runtime.store.audit(login_name or "anonymous","auth.login_failed",{})
             return (jsonify(error="Неверный логин или пароль"),401) if request.is_json else (template("login.html",error="Неверный логин или пароль"),401)
         with runtime.login_lock:runtime.login_attempts.pop(address,None)
-        session.clear();session["username"]=user["username"];session.permanent=True;csrf_token();runtime.audit("auth.login")
+        session.clear();session["username"]=user["username"];session["auth_epoch"]=runtime.settings().get("auth_epoch");session.permanent=True;csrf_token();runtime.audit("auth.login")
         return jsonify(success=True,user=public_user(user),csrf_token=csrf_token()) if request.is_json else redirect(url_for("index"))
     @app.route("/logout",methods=["GET","POST"])
     def logout():
@@ -296,6 +326,7 @@ def register_core(app,runtime):
         with runtime.store.lock:
             values=runtime.store.get_users()
             if any(u["username"].casefold()==new["username"].casefold() for u in values):return jsonify(error="Логин уже существует"),409
+            if len(values)>=1000:raise ValueError("Каталог поддерживает до 1000 пользователей")
             values.append(new);runtime.store.save_users(values)
         runtime.audit("user.created",{"login":new["username"],"role":new["role"]});return jsonify(success=True,user=public_user(new)),201
     @app.route("/api/users/<username>",methods=["PUT","DELETE"])
@@ -319,11 +350,13 @@ def register_core(app,runtime):
 
     def camera_list():
         user=runtime.current_user();groups=runtime.store.get_groups()
+        recorder_names={r["id"]:r["name"] for r in runtime.store.get_recorders()}
         permitted={g["id"] for g in groups} if user["role"]=="admin" else set(user.get("group_ids",[]))
         result=[]
         for camera in runtime.visible_devices(user):
-            item=public_device(camera);members=[g for g in groups if g["id"] in permitted and camera["id"] in g.get("camera_ids",[])]
-            item.update(group_ids=[g["id"] for g in members],group_names=[g["name"] for g in members],has_password=bool(camera.get("password")))
+            item=public_device(camera,connection=user["role"]=="admin");members=[g for g in groups if g["id"] in permitted and camera["id"] in g.get("camera_ids",[])]
+            item.update(group_ids=[g["id"] for g in members],group_names=[g["name"] for g in members],has_password=bool(camera.get("password")),
+                        recorder_name=recorder_names.get(camera.get("recorder_id"),camera["ip"]),can_edit=runtime.can_edit_camera(user,camera["id"]))
             result.append(item)
         return result
     def assign_groups(cam_id,chosen,groups):
@@ -339,6 +372,9 @@ def register_core(app,runtime):
         with media.lock:
             media.files={key:value for key,value in media.files.items() if key[0]!=str(cam_id)}
             media.audio_cache.pop(str(cam_id),None)
+            operations=[value for value in getattr(media,"operations",{}).values() if value.get("camera")==str(cam_id)]
+        for operation in operations:operation["cancel"]()
+    app.extensions["vwshub_invalidate_camera"]=invalidate_device
     @app.route("/api/cameras",methods=["GET","POST"])
     def cameras():
         if request.method=="GET":return jsonify(camera_list())
@@ -346,14 +382,13 @@ def register_core(app,runtime):
         data=body()
         with runtime.store.lock:
             devices=runtime.store.get_devices();old=next((c for c in devices if c["id"]==data.get("id")),None)
+            if not old and len(devices)>=4096:raise ValueError("Каталог поддерживает до 4096 камер")
             new=validate_device(data,old,runtime);groups=runtime.store.get_groups()
             if "group_ids" in data:assign_groups(new["id"],ids(data["group_ids"],"Группы камеры"),groups)
             if old:devices[devices.index(old)]=new
             else:devices.append(new)
-            runtime.store.save_devices(devices)
-            if "group_ids" in data:runtime.store.save_groups(groups)
-        connection_keys=("protocol","ip","port","rtsp_port","username","password","channel","rtsp_path","rtsp_sub_path")
-        if old and any(old.get(key)!=new.get(key) for key in connection_keys):invalidate_device(new["id"])
+            runtime.store.save_catalog(devices,groups)
+        if old and connection_signature(old)!=connection_signature(new):invalidate_device(new["id"])
         runtime.audit("camera.saved",{"id":new["id"],"protocol":new["protocol"]});return jsonify(success=True,camera=public_device(new))
     @app.post("/api/cameras/<cam_id>/clone")
     @admin_required
@@ -365,9 +400,11 @@ def register_core(app,runtime):
             clone=dict(source);clone["id"]="cam_"+uuid.uuid4().hex
             clone["name"]=text(data.get("name",source["name"]+" — копия"),"Название копии",150,True)
             if "channel" in data:clone["channel"]=integer(data["channel"],"Канал",0,255)
-            devices=runtime.store.get_devices();devices.append(clone);groups=runtime.store.get_groups()
+            devices=runtime.store.get_devices()
+            if len(devices)>=4096:raise ValueError("Каталог поддерживает до 4096 камер")
+            devices.append(clone);groups=runtime.store.get_groups()
             chosen=ids(data["group_ids"],"Группы камеры") if "group_ids" in data else [g["id"] for g in groups if cam_id in g.get("camera_ids",[])]
-            assign_groups(clone["id"],chosen,groups);runtime.store.save_devices(devices);runtime.store.save_groups(groups)
+            assign_groups(clone["id"],chosen,groups);runtime.store.save_catalog(devices,groups)
         runtime.audit("camera.cloned",{"source":cam_id,"id":clone["id"]});return jsonify(success=True,camera=public_device(clone),group_ids=chosen),201
     @app.delete("/api/cameras/<cam_id>")
     @admin_required
@@ -375,25 +412,40 @@ def register_core(app,runtime):
         with runtime.store.lock:
             devices=runtime.store.get_devices()
             if not any(c["id"]==cam_id for c in devices):abort(404)
-            runtime.store.save_devices([c for c in devices if c["id"]!=cam_id]);groups=runtime.store.get_groups()
+            groups=runtime.store.get_groups()
             for group in groups:group["camera_ids"]=[x for x in group.get("camera_ids",[]) if x!=cam_id]
-            runtime.store.save_groups(groups)
+            runtime.store.save_catalog([c for c in devices if c["id"]!=cam_id],groups)
         invalidate_device(cam_id)
         runtime.audit("camera.deleted",{"id":cam_id});return jsonify(success=True)
 
     @app.route("/api/groups",methods=["GET","POST"])
     def groups():
         me=runtime.current_user();values=runtime.store.get_groups()
-        if request.method=="GET":return jsonify(values if me["role"]=="admin" else [g for g in values if g["id"] in me.get("group_ids",[])])
-        if me["role"]!="admin":abort(403)
+        if request.method=="GET":return jsonify([{**g,"access":"edit" if runtime.can_edit_group(me,g["id"]) else "read"} for g in values if me["role"]=="admin" or g["id"] in me.get("group_ids",[])])
+        if me["role"]!="admin" and not any(runtime.can_edit_group(me,g["id"]) for g in values):abort(403)
         data=body();new={"id":data.get("id") or "grp_"+uuid.uuid4().hex,"name":text(data.get("name"),"Название группы",100,True),"camera_ids":ids(data.get("camera_ids",[]),"Камеры группы")}
         if not isinstance(new["id"],str) or not IDENTIFIER_RE.fullmatch(new["id"]):raise ValueError("Некорректный идентификатор группы")
         with runtime.store.lock:
             if set(new["camera_ids"])-{d["id"] for d in runtime.store.get_devices()}:raise ValueError("Выбрана несуществующая камера")
             values=runtime.store.get_groups();old=next((g for g in values if g["id"]==new["id"]),None)
+            if me["role"]!="admin":
+                if not old or not runtime.can_edit_group(me,old["id"]):abort(403)
+                if set(new["camera_ids"])-set(old.get("camera_ids",[])):raise ValueError("Редактор может переименовать группу или убрать её камеры; добавление доступно администратору")
+            camera_names=data.get("camera_names",{})
+            if not isinstance(camera_names,dict):raise ValueError("Названия камер: ожидается объект")
+            permitted=set(new["camera_ids"]) if me["role"]=="admin" else set(new["camera_ids"])&set(old.get("camera_ids",[]))
+            if set(camera_names)-permitted:raise ValueError("Переименование доступно только для камер этой группы")
+            camera_names={cid:text(name,"Название камеры",150,True) for cid,name in camera_names.items()}
             if old:values[values.index(old)]=new
-            else:values.append(new)
-            runtime.store.save_groups(values)
+            else:
+                if len(values)>=1000:raise ValueError("Каталог поддерживает до 1000 групп")
+                values.append(new)
+            if camera_names:
+                devices=runtime.store.get_devices()
+                for camera in devices:
+                    if camera["id"] in camera_names:camera["name"]=camera_names[camera["id"]]
+                runtime.store.save_catalog(devices,values)
+            else:runtime.store.save_groups(values)
         runtime.audit("group.saved",{"id":new["id"]});return jsonify(success=True,group=new)
     @app.delete("/api/groups/<group_id>")
     @admin_required
@@ -402,7 +454,9 @@ def register_core(app,runtime):
             values=runtime.store.get_groups()
             if not any(g["id"]==group_id for g in values):abort(404)
             runtime.store.save_groups([g for g in values if g["id"]!=group_id]);users=runtime.store.get_users()
-            for user in users:user["group_ids"]=[x for x in user.get("group_ids",[]) if x!=group_id]
+            for user in users:
+                user["group_ids"]=[x for x in user.get("group_ids",[]) if x!=group_id]
+                user.get("group_access",{}).pop(group_id,None)
             runtime.store.save_users(users)
         runtime.audit("group.deleted",{"id":group_id});return jsonify(success=True)
     @app.get("/api/groups/export")
@@ -425,7 +479,9 @@ def register_core(app,runtime):
                 if set(members)-known:raise ValueError("Файл ссылается на камеры, отсутствующие на этом сервере")
                 validated.append({"id":gid,"name":text(item.get("name"),"Название группы",100,True),"camera_ids":members})
             if len({x["id"] for x in validated})!=len(validated):raise ValueError("В файле повторяются идентификаторы групп")
-            merged={g["id"]:g for g in values};merged.update({g["id"]:g for g in validated});runtime.store.save_groups(list(merged.values()))
+            merged={g["id"]:g for g in values};merged.update({g["id"]:g for g in validated})
+            if len(merged)>1000:raise ValueError("Каталог поддерживает до 1000 групп")
+            runtime.store.save_groups(list(merged.values()))
         runtime.audit("groups.imported",{"count":len(validated)});return jsonify(success=True,imported=len(validated))
 
     @app.post("/api/cameras/status")
@@ -494,6 +550,14 @@ def register_core(app,runtime):
         if "motion" in data:
             if not isinstance(data["motion"],bool):raise ValueError("Анимация: логическое значение")
             brand["motion"]=data["motion"]
+        for key,allowed in {"recorder_labels":{"ip","name"},"density":{"comfortable","compact"},"corners":{"rounded","square"}}.items():
+            if key in data:
+                if not isinstance(data[key],str) or data[key] not in allowed:raise ValueError("Неизвестный вариант оформления: "+key)
+                brand[key]=data[key]
+        if "show_clock" in data:
+            if not isinstance(data["show_clock"],bool):raise ValueError("Часы: логическое значение")
+            brand["show_clock"]=data["show_clock"]
+        if "wall_gap" in data:brand["wall_gap"]=integer(data["wall_gap"],"Расстояние между камерами",0,12)
         with runtime.store.lock:settings=runtime.settings();settings["branding"]=brand;runtime.store.save_settings(settings)
         runtime.audit("branding.updated");return jsonify(success=True,branding=brand)
 
@@ -507,13 +571,16 @@ def register_core(app,runtime):
         media=app.extensions.get("vwshub_media")
         result.update(media.stats() if media else {"live_streams":0,"archive_streams":0})
         return result
-    def capabilities():return {"restart":bool(app.config.get("RESTART_COMMAND")),"backup":True,"metrics":True,"resource_limits":True,"restore_requires_server_access":True}
+    def capabilities():return {"restart":bool(app.config.get("RESTART_COMMAND")),"backup":True,"restore":True,"metrics":True,"resource_limits":True,"restore_requires_server_access":False}
     @app.route("/api/settings",methods=["GET","POST"])
     @admin_required
     def settings():
         values=runtime.settings()
         if request.method=="GET":return jsonify(settings={**values,**public_settings(runtime)},metrics=metrics(),capabilities=capabilities())
         data=body()
+        if "diagnostics" in data:
+            if not isinstance(data["diagnostics"],dict) or not isinstance(data["diagnostics"].get("enabled"),bool):raise ValueError("Диагностика: укажите enabled true/false")
+            values["diagnostics"]={"enabled":data["diagnostics"]["enabled"]}
         if "language" in data:
             if data["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
             values["language"]=data["language"]
@@ -553,9 +620,9 @@ def register_core(app,runtime):
     def backup():
         output=io.BytesIO()
         with runtime.store.lock,zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as archive:
-            for filename in ("users.json","groups.json","devices.json","settings.json",".camkey",".flask_secret"):
+            for filename in ("users.json","groups.json","devices.json","recorders.json","settings.json",".camkey",".flask_secret"):
                 archive.writestr("data/"+filename,(runtime.store.base_dir/filename).read_bytes())
-            archive.writestr("BACKUP.txt","VWSHub0.7. Contains encrypted credentials and their key. Keep offline/private. Stop the server before restoring data/.\n")
+            archive.writestr("BACKUP.txt","VWSHub0.8. Contains encrypted credentials and their key. Keep offline/private.\n")
         output.seek(0);runtime.audit("server.backup_exported")
         return send_file(output,mimetype="application/zip",as_attachment=True,download_name="vwshub-backup-"+datetime.now().strftime("%Y%m%d-%H%M%S")+".zip")
     @app.post("/api/server/restart")
@@ -575,7 +642,7 @@ def register_core(app,runtime):
 def create_app(data_dir=None,config=None):
     project=Path(__file__).resolve().parents[1]
     app=Flask(__name__,template_folder=str(project/"templates"),static_folder=str(project/"static"))
-    app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","0")=="1",PERMANENT_SESSION_LIFETIME=timedelta(days=7),MAX_CONTENT_LENGTH=3*1024*1024,CSRF_ENABLED=True)
+    app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","0")=="1",PERMANENT_SESSION_LIFETIME=timedelta(days=7),MAX_CONTENT_LENGTH=20*1024*1024,CSRF_ENABLED=True)
     if config:app.config.update(config)
     target=Path(data_dir or os.getenv("VWSHUB_DATA_DIR") or os.getenv("WEBVMS_DATA_DIR") or project/"data")
     store=DataStore(target,app.config.get("LEGACY_DATA_DIR",project));runtime=Runtime(store)
@@ -587,6 +654,8 @@ def create_app(data_dir=None,config=None):
         if not isinstance(command,list) or not command or any(not isinstance(x,str) for x in command):raise RuntimeError("VWSHUB_RESTART_COMMAND must be a JSON argument array")
         app.config["RESTART_COMMAND"]=command
     register_core(app,runtime)
+    from .catalog import register_catalog
+    register_catalog(app,runtime)
     if app.config.get("REGISTER_EXTENSIONS",True):
         from .media import register_media
         from .devices import register_devices

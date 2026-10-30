@@ -44,6 +44,10 @@ def resources():
             'archive_idle_seconds':int(configured.get('archive_idle_seconds',180)),
             'ffmpeg_threads':int(configured.get('ffmpeg_threads',2))}
 
+def hardware_event(rt,event,camera,**details):
+    journal=getattr(rt,'hardware',None)
+    if journal:journal.record(event,camera,**details)
+
 def build_rtsp_live_url(cam, stream_type="main"):
     proto = cam.get("protocol", "dvrip")
     ip = cam["ip"]
@@ -61,7 +65,9 @@ def build_rtsp_live_url(cam, stream_type="main"):
                 f"&channel={channel + 1}&stream={s}.sdp?real_stream")
     path = cam.get("rtsp_path", "").strip()
     if path and not path.startswith("/"): path = "/" + path
-    return f"rtsp://{user_enc}:{pass_enc}@{ip}:{rtsp_port}{path}"
+    host=cam.get('rtsp_host') or ip
+    if ':' in host:host='['+host+']'
+    return f"rtsp://{user_enc}:{pass_enc}@{host}:{rtsp_port}{path}"
 
 def open_dvr_connection(cam,password,on_open=None):
     if DVRIPCam is None: raise RuntimeError('Установите DVRIP-зависимость из requirements.txt')
@@ -618,15 +624,20 @@ class MediaService:
             if len(self.files)>20000:self.files={key:value for key,value in self.files.items() if value[0]>now-300}
 
     def query_files(self,cam,start,end):
-        dvr=dvr_connect(cam)
+        began=time.monotonic();dvr=None
         try:
+            dvr=dvr_connect(cam)
             raw=dvr.list_local_files(start,end,'h264',channel=int(cam.get('channel',0)))
             if not isinstance(raw,(list,tuple)):raise RuntimeError('Регистратор вернул некорректный список записей')
             channel=int(cam.get('channel',0))
             records=[r for r in normalize_recordings(raw,channel) if r['Channel']==channel]
             self.remember(cam['id'],records)
+            hardware_event(self.runtime,'archive.list',cam,records=len(records),start=start,end=end,duration_ms=round((time.monotonic()-began)*1000))
             return records
-        finally:dvr.close()
+        except Exception as exc:
+            hardware_event(self.runtime,'archive.list_failed',cam,level='error',error_type=type(exc).__name__,duration_ms=round((time.monotonic()-began)*1000));raise
+        finally:
+            if dvr is not None:dvr.close()
 
     def resolve(self,cam,start,end,path=''):
         """Bind every file to the selected camera; a viewer cannot inject CH1 paths."""
@@ -703,7 +714,9 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     idle=max(30,min(600,limits['archive_idle_seconds']))
     chunks=queue.Queue(maxsize=max(8,min(4096,int(limits['archive_buffer_mb'])*32)))
     cancelled=threading.Event();lock=threading.Lock()
-    state={'cam':None,'proc':None,'worker':None,'cleaned':False,'error':None,'metadata':{}}
+    state={'cam':None,'proc':None,'worker':None,'cleaned':False,'error':None,'metadata':{},'frames':0,'bytes_out':0}
+    began=time.monotonic()
+    hardware_event(service.runtime,'archive.open',cam_info,start=start,end=end,files=len(records),audio=audio,download=as_attachment)
     def close_cam():
         with lock:cam=state.pop('cam',None)
         if cam is not None:
@@ -775,6 +788,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
             metadata=state['metadata']
             frames=iter_dvr_audio_frames(source(),metadata) if audio else iter_dvr_video_frames(source(),metadata)
             first=next(frames,None)
+            if first is not None:state['frames']=1
             if first is None:raise RuntimeError('В записи нет поддерживаемого звука' if audio else 'Регистратор не передал видеокадры')
             fmt,data=first
             cmd=[ffmpeg,'-hide_banner','-loglevel','error','-fflags','+genpts+discardcorrupt','-err_detect','ignore_err','-probesize','32768','-analyzeduration','0','-f',fmt]
@@ -808,11 +822,13 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                     while not cancelled.is_set():
                         part=proc.stdout.read(32768)
                         if not part or not put(part):break
+                        state['bytes_out']+=len(part)
                 except Exception:pass
             threading.Thread(target=errors,daemon=True,name='archive-stderr').start()
             reader=threading.Thread(target=output,daemon=True,name='archive-output');reader.start()
             if not _write_all(proc.stdin,data,cancelled):return
             for _,data in frames:
+                state['frames']+=1
                 if cancelled.is_set() or proc.poll() is not None:break
                 if not _write_all(proc.stdin,data,cancelled):break
             try:proc.stdin.close()
@@ -827,6 +843,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                 reader.join(timeout=.25)
         except Exception as exc:
             if not cancelled.is_set():
+                hardware_event(service.runtime,'archive.failed',cam_info,level='error',error_type=type(exc).__name__)
                 state['error']='Не удалось прочитать архив. Проверьте регистратор, канал и доступность записи.'
                 log.warning('Archive transfer failed for device %s: %s',cam_info.get('id'),type(exc).__name__)
         finally:
@@ -841,6 +858,9 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                 for stream in (proc.stdin,proc.stdout,proc.stderr):
                     try:stream.close()
                     except Exception:pass
+            hardware_event(service.runtime,'archive.closed',cam_info,frames=state['frames'],bytes_out=state['bytes_out'],
+                           fps=state['metadata'].get('fps'),actual_start=state['metadata'].get('start_time'),audio=audio,cancelled=cancelled.is_set(),
+                           ffmpeg_returncode=proc.poll() if proc else None,duration_ms=round((time.monotonic()-began)*1000))
             put(None)
     if operation_key:
         with service.lock:
@@ -893,22 +913,37 @@ def register_media(app, rt):
         start=normalize_time(request.args.get('start'));end=normalize_time(request.args.get('end'))
         if start>=end:raise ValueError('Начало периода должно быть раньше конца')
         return start,end
+    def live_consumer(value=None):
+        if value is not None:
+            if not isinstance(value,str) or not re.fullmatch(r'[a-f0-9]{32}',value):raise ValueError('Неверный идентификатор видеостены')
+            return rt.current_user()['username']+':'+value
+        if 'live_consumer' not in session:session['live_consumer']=uuid.uuid4().hex
+        return session['live_consumer']
     @bp.post('/api/live/stop')
     def stop_live():
         body=request.get_json(silent=True) or {};cam,err=authorized(body.get('cam_id'))
         if err:return err
-        service.live.release(cam['id'],body.get('stream','main'),session.get('live_consumer'))
+        service.live.release(cam['id'],body.get('stream','main'),live_consumer(body.get('consumer')))
         return jsonify(success=True)
     @bp.get('/live/<cam_id>/<stream>/index.m3u8')
     def live_playlist(cam_id,stream):
         cam,err=authorized(cam_id)
         if err:return err
-        if 'live_consumer' not in session:session['live_consumer']=uuid.uuid4().hex
+        consumer=request.args.get('consumer');lease=live_consumer(consumer)
         try:
-            item=service.live.ensure(cam_id,stream,session['live_consumer']);playlist=item['directory']/'index.m3u8'
+            began=time.monotonic()
+            item=service.live.ensure(cam_id,stream,lease);playlist=item['directory']/'index.m3u8'
             deadline=time.monotonic()+12
             while not playlist.exists() and time.monotonic()<deadline and item['process'].poll() is None:time.sleep(.1)
-            if not playlist.exists():return jsonify(error='Поток ещё не готов или недоступен'),503
+            if not playlist.exists():
+                if not item.get('reported_failure'):
+                    item['reported_failure']=True;hardware_event(rt,'live.failed',cam,level='error',stream=stream,ffmpeg_returncode=item['process'].poll(),duration_ms=round((time.monotonic()-began)*1000))
+                return jsonify(error='Поток ещё не готов или недоступен'),503
+            if not item.get('reported_ready'):
+                item['reported_ready']=True;hardware_event(rt,'live.ready',cam,stream=stream,duration_ms=round((time.monotonic()-began)*1000))
+            if consumer:
+                lines=[line+'?consumer='+consumer if re.fullmatch(r'seg_\d+\.ts',line) else line for line in playlist.read_text(encoding='utf-8').splitlines()]
+                return Response('\n'.join(lines)+'\n',mimetype='application/vnd.apple.mpegurl',headers={'Cache-Control':'no-store'})
             return send_from_directory(item['directory'],'index.m3u8',mimetype='application/vnd.apple.mpegurl',max_age=0)
         except (ValueError,RuntimeError) as exc:return jsonify(error=str(exc)),503
     @bp.get('/live/<cam_id>/<stream>/<path:filename>')
@@ -919,7 +954,7 @@ def register_media(app, rt):
         with service.live.lock:
             item=service.live.streams.get((cam_id,stream))
             if not item:return jsonify(error='Поток не запущен'),404
-            item.setdefault('leases',{})[session.get('live_consumer')]=time.monotonic()
+            item.setdefault('leases',{})[live_consumer(request.args.get('consumer'))]=time.monotonic()
             directory=item['directory']
         return send_from_directory(directory,filename,mimetype='video/mp2t',max_age=0)
     @bp.get('/api/recordings')
@@ -989,11 +1024,12 @@ def register_media(app, rt):
         if not me or me.get('role')!='admin':return jsonify(error='Требуются права администратора'),403
         body=request.get_json(silent=True) or {}
         existing=rt.get_camera(str(body.get('id',''))) or {}
-        draft={**existing,**{k:v for k,v in body.items() if k in {'ip','protocol','username','port','rtsp_port','rtsp_path','channel'}}}
+        draft={**existing,**{k:v for k,v in body.items() if k in {'ip','protocol','username','port','rtsp_port','rtsp_host','rtsp_path','rtsp_sub_path','channel'}}}
         password=body.get('password')
         draft['password']=rt.enc_pwd(password) if password else existing.get('password','')
         try:
             if not isinstance(draft.get('ip'),str) or not draft['ip'].strip() or re.search(r'[\s/@?#\\]',draft['ip']):raise ValueError('Укажите IP-адрес или имя узла')
+            if draft.get('rtsp_host') and (not isinstance(draft['rtsp_host'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]+',draft['rtsp_host']) or '..' in draft['rtsp_host']):raise ValueError('Некорректный узел RTSP')
             if draft.get('protocol') not in ('dvrip','onvif'):raise ValueError('Укажите протокол устройства')
             for key,default in [('port',34567 if draft['protocol']=='dvrip' else 80),('rtsp_port',554)]:
                 draft[key]=int(draft.get(key) or default)
