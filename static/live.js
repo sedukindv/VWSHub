@@ -18,7 +18,7 @@
         life = new AbortController(),
         signal = life.signal,
         key = "vwshub.view." + user.username;
-      const consumer = crypto.randomUUID().replaceAll("-", "");
+      const consumer = model.consumerId(crypto);
       let disposed = false,
         uid = 0,
         players = new Map(),
