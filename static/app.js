@@ -1,4 +1,4 @@
-/* VWSHub 0.8 application shell and administration. No external UI dependencies. */
+/* VWSHub 0.8.5 application shell and administration. No external UI dependencies. */
 (() => {
   "use strict";
   const $ = (s, r = document) => r.querySelector(s),
@@ -35,6 +35,9 @@
     Группы: "Groups",
     Пользователи: "Users",
     Устройства: "Devices",
+    Пространства: "Spaces",
+    "Управление оборудованием": "Hardware management",
+    "Цвет значков": "Icon color",
     Логи: "Logs",
     Кастомизация: "Appearance",
     Настройки: "Settings",
@@ -325,58 +328,7 @@
           "'": "&#39;",
         })[c],
     );
-  const paths = {
-    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
-    archive:
-      '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9m-9 4h4"/>',
-    camera:
-      '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/>',
-    photo:
-      '<path d="M4 7h4l2-3h4l2 3h4v13H4z"/><circle cx="12" cy="13" r="4"/>',
-    folder: '<path d="M3 6h7l2 2h9v12H3z"/>',
-    users:
-      '<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="10" cy="9" r="2.5"/><path d="M5.8 17c.4-2.2 1.8-3.3 4.2-3.3s3.8 1.1 4.2 3.3M16 7h2m-2 4h2m-1 4h1"/>',
-    server:
-      '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.01M7 17h.01M12 6h5M12 17h5"/>',
-    settings: '<path d="M4 3v18M12 3v18M20 3v18M1 8h6m2 8h6m2-6h6"/>',
-    list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-    palette:
-      '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 9h18M9 9v12"/><path d="m12 17 4-4 2 2-4 4h-2z"/><path d="M6 6h.01M9 6h.01"/>',
-    menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
-    panel:
-      '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18m6-13-3 4 3 4"/>',
-    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/>',
-    moon: '<path d="M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10z"/>',
-    monitor:
-      '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
-    logout: '<path d="M10 17l5-5-5-5M3 12h12M12 3h8v18h-8"/>',
-    plus: '<path d="M5 12h14M12 5v14"/>',
-    search: '<circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/>',
-    refresh:
-      '<path d="M20 7v5h-5M4 17v-5h5M5 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12-3"/>',
-    edit: '<path d="m16 3 5 5L9 20l-6 1 1-6zM13 6l5 5"/>',
-    clone:
-      '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
-    trash: '<path d="M3 6h18M8 6V3h8v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>',
-    close: '<path d="m6 6 12 12M6 18 18 6"/>',
-    check: '<path d="m4 12 5 5L20 6"/>',
-    download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
-    upload: '<path d="M12 17V5m-5 5 5-5 5 5M4 16v5h16v-5"/>',
-    play: '<path d="m8 5 11 7-11 7z"/>',
-    pause: '<path d="M8 5v14M16 5v14"/>',
-    expand: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
-    left: '<path d="m14 5-7 7 7 7"/>',
-    right: '<path d="m10 5 7 7-7 7"/>',
-    alert: '<path d="m12 3 10 18H2zM12 9v4m0 4h.01"/>',
-    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/>',
-    brand: '<path d="m3 5 9 15 9-15M7 5l5 8 5-8"/>',
-    lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/>',
-    link: '<path d="m9 15 6-6M7 12l-3 3a4 4 0 0 0 5 5l3-3m0-10 3-3a4 4 0 0 1 5 5l-3 3"/>',
-    route:
-      '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M9 6h3a3 3 0 0 1 3 3v3a3 3 0 0 0 3 3"/>',
-  };
-  const icon = (name) =>
-    `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
+  const icon = (name) => window.VWSIcons.html(name);
   function toast(message, type = "success") {
     const el = document.createElement("div");
     el.className = `toast ${type}`;
@@ -532,31 +484,35 @@
   const nav = [
     ["live", "Просмотр", "grid", 0],
     ["archive", "Архив", "archive", 0],
-    ["cameras", "Камеры", "camera", 1],
-    ["groups", "Группы", "folder", 0],
+    ["cameras", "Устройства", "video", 1],
+    ["groups", "Пространства", "layers-3", 0],
     ["users", "Пользователи", "users", 1],
-    ["devices", "Устройства", "server", 1],
+    ["devices", "Управление оборудованием", "wrench", 1],
     ["logs", "Логи", "list", 1],
     ["customize", "Кастомизация", "palette", 1],
     ["settings", "Настройки", "settings", 1],
   ];
   function allowed(view) {
-    return nav.some(
-      ([v, , , admin]) =>
-        v === view &&
-        (!admin ||
-          state.user.role === "admin" ||
-          (v === "cameras" && state.cameras.some((c) => c.can_edit))) &&
-        (v !== "archive" ||
-          state.user.role === "admin" ||
-          state.user.archive_access),
-    );
+    if (!nav.some(([id]) => id === view)) return false;
+    if (state.user.role === "admin") return true;
+    const permissions = state.user.permissions || {};
+    if (view === "live") return permissions.live !== false;
+    if (view === "archive") return !!permissions.archive_view;
+    if (view === "cameras") return !!state.user.can_edit;
+    if (view === "groups")
+      return !!(state.groups.length || permissions.edit_spaces);
+    return false;
   }
   function applyBrand() {
     const b = state.branding;
+    document.body.style.removeProperty("--accent");
     document.documentElement.style.setProperty(
       "--accent",
       b.accent || "#526cf5",
+    );
+    document.documentElement.style.setProperty(
+      "--icon-color",
+      b.icon_color || "#71809c",
     );
     document.body.dataset.motion = b.motion === false ? "off" : "on";
     document.body.dataset.density = b.density || "comfortable";
@@ -567,8 +523,11 @@
     );
     document.title = b.name || "VWSHub";
     $("#brand").innerHTML =
-      `<span class="brand-mark">${b.logo ? `<img src="${h(b.logo)}" alt="">` : icon("brand")}</span><span class="brand-copy"><strong>${h(b.name)}</strong><small>${h(b.subtitle)}</small></span>`;
-    if (b.favicon) {
+      `<span class="brand-mark">${b.logo ? `<img src="${h(b.logo)}" alt="">` : window.VWSIcons.html(b.logo_icon || "brand")}</span><span class="brand-copy"><strong>${h(b.name)}</strong><small>${h(b.subtitle)}</small></span>`;
+    const favicon =
+      b.favicon ||
+      (b.favicon_icon ? window.VWSIcons.dataURL(b.favicon_icon, b.accent) : "");
+    if (favicon) {
       let link = $("#site-favicon");
       if (!link) {
         link = document.createElement("link");
@@ -576,7 +535,7 @@
         link.rel = "icon";
         document.head.append(link);
       }
-      link.href = b.favicon;
+      link.href = favicon;
     } else $("#site-favicon")?.remove();
   }
   function renderShell() {
@@ -651,23 +610,61 @@
     $("#logout").title = t("Выйти");
   }
   async function loadData() {
-    const promises = [
-      api("/api/cameras"),
-      api("/api/groups"),
-      api("/api/recorders"),
-    ];
-    if (state.user.role === "admin") promises.push(api("/api/users"));
-    const values = await Promise.all(promises);
-    state.cameras = values[0];
-    state.groups = values[1];
-    state.recorders = values[2] || [];
-    state.users = values[3] || [];
+    const context = await api("/api/workspace");
+    state.cameras.splice(0, state.cameras.length, ...context.cameras);
+    state.groups.splice(0, state.groups.length, ...context.spaces);
+    state.inventory = context.devices;
+    state.recorders = context.devices;
+    Object.assign(state.user, context.user);
+    state.catalogRevision = context.revision;
+    state.users = state.user.role === "admin" ? await api("/api/users") : [];
+    if (context.branding) state.branding = context.branding;
+    if (context.public_settings)
+      state.public_settings = context.public_settings;
     if (!state.cameras.some((c) => c.id === state.archiveId))
       state.archiveId =
         state.cameras.find((c) => c.protocol === "dvrip")?.id || "";
   }
+  let refreshingCatalog = false;
+  async function pollCatalog() {
+    if (refreshingCatalog || document.hidden) return;
+    refreshingCatalog = true;
+    try {
+      const current = await api("/api/workspace/revision");
+      if (current.revision !== state.catalogRevision) {
+        await loadData();
+        applyBrand();
+        renderShell();
+        if (!allowed(state.view)) {
+          await showView(
+            allowed(state.view)
+              ? state.view
+              : nav.find(([id]) => allowed(id))?.[0] || "live",
+          );
+        } else if (state.view === "live" || state.view === "archive") {
+          window.dispatchEvent(
+            new CustomEvent("vwshub:catalog", {
+              detail: {
+                cameras: state.cameras,
+                spaces: state.groups,
+                user: state.user,
+              },
+            }),
+          );
+        } else if (!document.querySelector("#modal-root .modal")) {
+          await showView(state.view);
+        }
+      }
+    } catch (_) {
+      /* A later poll retries; api handles an expired session. */
+    } finally {
+      refreshingCatalog = false;
+    }
+  }
   async function showView(view, extra = {}) {
     if (!allowed(view)) return;
+    const previousView = state.view,
+      previousScroll = $("#main-content").scrollTop;
     cleanup?.();
     cleanup = null;
     ++pageGeneration;
@@ -685,6 +682,9 @@
           user: state.user,
           settings: state.public_settings,
           groupId: extra.groupId,
+          zoneId: extra.zoneId,
+          rootOnly: extra.rootOnly,
+          cameraId: extra.cameraId,
           hub: H,
           onArchive: (id) => {
             state.archiveId = id;
@@ -697,19 +697,42 @@
           cameras: state.cameras,
           groups: state.groups,
           selectedId: state.archiveId,
+          user: state.user,
           api,
           language: state.language,
           onSelect: (id) => (state.archiveId = id),
           onError: (m) => toast(m, "error"),
           onSuccess: toast,
         });
-      else if (view === "cameras") renderCameras();
-      else if (view === "groups") renderGroups();
-      else if (view === "users") renderUsers();
+      else if (["cameras", "groups", "users"].includes(view))
+        cleanup = window.VWSInfrastructure.mount({
+          root: main,
+          mode: view,
+          hub: H,
+        });
       else if (view === "devices")
         cleanup = window.VWSDevices.mount({
           root: main,
-          cameras: state.cameras,
+          cameras: (state.inventory || []).flatMap((device) =>
+            device.channels.length
+              ? device.channels.map((camera) => ({
+                  ...camera,
+                  recorder_name: device.name,
+                }))
+              : [
+                  {
+                    ...device.connection,
+                    id: device.id,
+                    recorder_id: device.id,
+                    recorder_name: device.name,
+                    name: device.name,
+                    channel: 0,
+                    protocol: device.protocol,
+                    ip: device.ip,
+                    port: device.port,
+                  },
+                ],
+          ),
           isAdmin: state.user.role === "admin",
           hub: H,
           onCatalogChanged: async ({ refreshStatus = false } = {}) => {
@@ -728,6 +751,9 @@
     } catch (e) {
       toast(e.message, "error");
       main.innerHTML = empty("Ничего не найдено", e.message);
+    } finally {
+      if (state.view === view)
+        main.scrollTop = previousView === view ? previousScroll : 0;
     }
   }
 
@@ -801,7 +827,7 @@
           ["unknown", "Не проверен"],
         ],
         f.status,
-      )}</div></div>${rows ? `<div class="table-wrap"><table class="catalog-table"><thead><tr>${["Название", "Подключение", "Статус", "Группы камеры", "Действия"].map((label) => `<th ${label === "Действия" ? 'class="actions-column"' : ""}>${t(label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div><p class="status-note">${t("Состояние проверяется при открытии страницы, после сохранения камеры и по кнопке «Обновить статус».")}</p>` : empty(state.cameras.length ? "Ничего не найдено" : "У вас пока нет доступных камер", "Выберите другой запрос.")}`,
+      )}</div></div>${rows ? `<div class="table-wrap"><table class="catalog-table"><thead class="infra-list-head"><tr>${["Название", "Подключение", "Статус", "Группы камеры", "Действия"].map((label) => `<th ${label === "Действия" ? 'class="actions-column"' : ""}>${t(label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div><p class="status-note">${t("Состояние проверяется при открытии страницы, после сохранения камеры и по кнопке «Обновить статус».")}</p>` : empty(state.cameras.length ? "Ничего не найдено" : "У вас пока нет доступных камер", "Выберите другой запрос.")}`,
     );
     main.scrollTop = scroll;
     if (admin) {
@@ -1186,7 +1212,7 @@
       "Доступ и учётные записи",
       "Назначайте группы и отдельно разрешайте просмотр архива.",
       button("user-add", "Добавить пользователя", "plus", "btn-primary"),
-      `<div class="table-wrap"><table><thead><tr>${["Псевдоним", "Роль", "Доступные группы", "Доступ к архиву", "Действия"].map((x) => `<th>${t(x)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`,
+      `<div class="table-wrap"><table><thead class="infra-list-head"><tr>${["Псевдоним", "Роль", "Доступные группы", "Доступ к архиву", "Действия"].map((x) => `<th>${t(x)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`,
     );
     $("#user-add").onclick = () => openUser();
     $$("[data-action]").forEach(
@@ -1299,7 +1325,7 @@
           ? button("logs-export", "Скачать диагностику", "download")
           : "") +
         button("logs-clear", "Очистить", "trash", "btn-danger"),
-      `<div class="toolbar"><div class="segmented"><button class="${hardware ? "" : "active"}" data-log-kind="audit">${t("Действия")}</button><button class="${hardware ? "active" : ""}" data-log-kind="hardware">${t("Оборудование")}</button></div><span class="muted">${logs.length} ${t("последних событий")}</span></div><div class="table-wrap"><table><thead><tr>${["Время", hardware ? "Уровень" : "Пользователь", "Событие", "Подробности"].map((label) => `<th>${t(label)}</th>`).join("")}</tr></thead><tbody>${rows || '<tr><td colspan="4">—</td></tr>'}</tbody></table></div>`,
+      `<div class="toolbar"><div class="segmented"><button class="${hardware ? "" : "active"}" data-log-kind="audit">${t("Действия")}</button><button class="${hardware ? "active" : ""}" data-log-kind="hardware">${t("Оборудование")}</button></div><span class="muted">${logs.length} ${t("последних событий")}</span></div><div class="table-wrap"><table><thead class="infra-list-head"><tr>${["Время", hardware ? "Уровень" : "Пользователь", "Событие", "Подробности"].map((label) => `<th>${t(label)}</th>`).join("")}</tr></thead><tbody>${rows || '<tr><td colspan="4">—</td></tr>'}</tbody></table></div>`,
     );
     const refresh = () =>
       renderLogs().catch((error) => toast(error.message, "error"));
@@ -1318,57 +1344,167 @@
     );
   }
   function renderCustomize() {
-    const b = state.branding;
+    const b = state.branding,
+      L = (ru, en) => (state.language === "en" ? en : ru);
     let logo = b.logo || "",
-      favicon = b.favicon || "";
+      favicon = b.favicon || "",
+      logoIcon = b.logo_icon || "",
+      faviconIcon = b.favicon_icon || "";
+    const defaults = { accent: "#526cf5", icon_color: "#71809c" };
+    const colorSetting = (name, label, help, colors) =>
+      formField(
+        label,
+        `<div class="brand-color-control"><label class="brand-color-value"><input type="color" id="brand-${name}" name="${name}" value="${h(b[name] || defaults[name])}" aria-label="${h(label)}"><span data-color-value="${name}">${h(b[name] || defaults[name])}</span></label><div class="color-swatches">${colors.map((color) => `<button type="button" data-palette="${name}" data-color="${color}" style="--swatch:${color}" aria-label="${h(label)}: ${color}" title="${color}"></button>`).join("")}</div><button class="btn btn-sm" type="button" data-color-default="${name}">${icon("rotate-ccw")}${h(L("По умолчанию", "Default"))}</button></div>`,
+        help,
+      );
+    const assetPanel = (kind, title) =>
+      `<section class="panel"><div class="panel-head"><h2 class="panel-title">${h(title)}</h2></div><div class="panel-body brand-asset"><span id="${kind}-preview" class="${kind === "logo" ? "brand-mark" : "avatar"} brand-asset-preview"></span><div class="brand-asset-actions">${button(kind + "-upload", "Выбрать изображение", "upload")}<button class="btn" type="button" id="${kind}-icon">${icon("shapes")}${h(L("Выбрать значок", "Choose icon"))}</button><button class="btn btn-sm" type="button" id="${kind}-clear">${icon("rotate-ccw")}${h(L("По умолчанию", "Default"))}</button></div></div></section>`;
     $("#main-content").innerHTML = page(
       "Название и оформление",
       "Оформление применяется ко всем пользователям и странице входа.",
       `<button type="submit" form="brand-form" class="btn btn-primary">${icon("check")}${t("Сохранить")}</button>`,
-      `<form id="brand-form" class="settings-grid"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Кастомизация")}</h2>${icon("palette")}</div><div class="panel-body form-stack"><div class="form-grid">${formField("Название сайта", input("name", b.name, 'required maxlength="80"'))}${formField("Подпись", input("subtitle", b.subtitle, 'maxlength="80"'))}</div><div class="form-grid">${formField("Названия регистраторов", `<select class="select" name="recorder_labels"><option value="ip" ${b.recorder_labels !== "name" ? "selected" : ""}>IP</option><option value="name" ${b.recorder_labels === "name" ? "selected" : ""}>${t("Имя устройства")}</option></select>`)}${formField("Плотность интерфейса", `<select class="select" name="density"><option value="comfortable" ${b.density !== "compact" ? "selected" : ""}>${t("Комфортная")}</option><option value="compact" ${b.density === "compact" ? "selected" : ""}>${t("Компактная")}</option></select>`)}${formField("Углы элементов", `<select class="select" name="corners"><option value="rounded" ${b.corners !== "square" ? "selected" : ""}>${t("Скруглённые")}</option><option value="square" ${b.corners === "square" ? "selected" : ""}>${t("Прямые")}</option></select>`)}${formField("Отступ видеостены, px", input("wall_gap", b.wall_gap ?? 3, 'type="number" min="0" max="12"'))}</div><label class="check-item"><input type="checkbox" name="show_clock" ${b.show_clock !== false ? "checked" : ""}><span>${t("Показывать часы на видеостене")}</span></label>${formField("Основной цвет", `<div class="row-actions"><input name="accent" type="color" class="field" style="width:70px;padding:5px" value="${h(b.accent)}"><div class="color-swatches">${["#526cf5", "#13a08a", "#e58c35", "#a363e8", "#d85570", "#2877bb"].map((color) => `<button type="button" data-color="${color}" style="background:${color}" aria-label="${color}"></button>`).join("")}</div></div>`)}<label class="check-item"><input type="checkbox" name="motion" ${b.motion !== false ? "checked" : ""}><span>${t("Включить анимацию")}</span></label></div><div class="modal-foot"><span class="modal-note">VWSHub 0.8</span><button class="btn btn-primary" type="submit">${icon("check")}${t("Сохранить")}</button></div></div><div class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Логотип")}</h2></div><div class="panel-body"><div class="upload-preview"><span class="brand-mark" id="logo-preview" style="width:76px;height:76px">${logo ? `<img src="${h(logo)}" alt="">` : icon("brand")}</span><div class="form-stack">${button("logo-upload", "Выбрать изображение", "upload")}${button("logo-clear", "Удалить изображение", "close")}</div></div></div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Фавикон")}</h2></div><div class="panel-body"><div class="upload-preview"><span id="favicon-preview" class="avatar">${favicon ? `<img src="${h(favicon)}" alt="">` : "V"}</span><div class="form-stack">${button("favicon-upload", "Выбрать изображение", "upload")}${button("favicon-clear", "Удалить изображение", "close")}</div></div></div></div></div></form><input id="branding-file" class="file-hidden" type="file" accept="image/png,image/jpeg,image/webp">`,
+      `<form id="brand-form" class="settings-grid"><div class="form-stack"><section class="panel"><div class="panel-head"><h2 class="panel-title">${h(L("Интерфейс", "Interface"))}</h2>${icon("palette")}</div><div class="panel-body form-stack"><div class="form-grid">${formField("Название сайта", input("name", b.name, 'id="brand-name" required maxlength="80"'))}${formField("Подпись", input("subtitle", b.subtitle, 'id="brand-subtitle" maxlength="80"'))}</div><div class="form-grid">${formField("Плотность интерфейса", `<select class="select" name="density" id="brand-density"><option value="comfortable" ${b.density !== "compact" ? "selected" : ""}>${t("Комфортная")}</option><option value="compact" ${b.density === "compact" ? "selected" : ""}>${t("Компактная")}</option></select>`)}${formField("Углы элементов", `<select class="select" name="corners" id="brand-corners"><option value="rounded" ${b.corners !== "square" ? "selected" : ""}>${t("Скруглённые")}</option><option value="square" ${b.corners === "square" ? "selected" : ""}>${t("Прямые")}</option></select>`)}</div>${formField("Отступ видеостены, px", `<div class="brand-range"><input type="range" id="brand-wall-gap" name="wall_gap" min="0" max="12" value="${Number(b.wall_gap ?? 3)}"><output for="brand-wall-gap">${Number(b.wall_gap ?? 3)} px</output></div>`)}<div class="form-grid"><label class="check-item"><input type="checkbox" name="show_clock" ${b.show_clock !== false ? "checked" : ""}><span>${t("Показывать часы на видеостене")}</span></label><label class="check-item"><input type="checkbox" name="motion" ${b.motion !== false ? "checked" : ""}><span>${t("Включить анимацию")}</span></label></div></div></section><section class="panel"><div class="panel-head"><h2 class="panel-title">${h(L("Цвета", "Colors"))}</h2></div><div class="panel-body form-stack">${colorSetting("accent", L("Акцентный цвет", "Accent color"), L("Кнопки, активные значки, флажки, ссылки и рамки.", "Buttons, active icons, checkboxes, links and focus borders."), ["#526cf5", "#13a08a", "#c56c21", "#9360cf", "#ce4d6c", "#2877bb"])}${colorSetting("icon_color", L("Цвет значков", "Icon color"), L("Обычные значки. Состояния ошибок и подключения сохраняют свои цвета.", "Regular icons. Connection and error indicators keep their status colors."), ["#71809c", "#465269", "#4b79a8", "#8c6fc5", "#279b85", "#c68140"])}<div class="brand-style-preview"><span class="brand-preview-label">${h(L("Предпросмотр", "Preview"))}</span><span class="brand-preview-icons">${icon("camera")}${icon("layers-3")}${icon("users")}</span><span class="btn btn-primary">${icon("check")}${h(L("Активный элемент", "Active control"))}</span><span class="brand-check-preview">${icon("check")}</span></div></div></section></div><div class="form-stack">${assetPanel("logo", t("Логотип"))}${assetPanel("favicon", t("Фавикон"))}</div></form><input id="branding-file" class="file-hidden" type="file" accept="image/png,image/jpeg,image/webp">`,
     );
-    let target = "logo";
-    $("#logo-upload").onclick = () => {
-      target = "logo";
-      $("#branding-file").click();
-    };
-    $("#favicon-upload").onclick = () => {
-      target = "favicon";
-      $("#branding-file").click();
-    };
-    $("#logo-clear").onclick = () => {
-      logo = "";
-      $("#logo-preview").innerHTML = icon("brand");
-    };
-    $("#favicon-clear").onclick = () => {
-      favicon = "";
-      $("#favicon-preview").textContent = "V";
-    };
-    $("#branding-file").onchange = async (e) => {
-      try {
-        const data = await readImage(
-          e.target.files[0],
-          target === "logo" ? 256 : 64,
+    const form = $("#brand-form");
+    function renderAssets() {
+      $("#logo-preview").innerHTML = logo
+        ? `<img src="${h(logo)}" alt="">`
+        : window.VWSIcons.html(logoIcon || "brand");
+      $("#favicon-preview").innerHTML = favicon
+        ? `<img src="${h(favicon)}" alt="">`
+        : faviconIcon
+          ? window.VWSIcons.html(faviconIcon)
+          : "V";
+    }
+    let target = "logo",
+      assetBusy = 0;
+    const assetVersion = { logo: 0, favicon: 0 };
+    const syncAssetBusy = () => {
+      if (form.isConnected)
+        $$('[form="brand-form"][type="submit"]').forEach(
+          (button) => (button.disabled = assetBusy > 0),
         );
-        if (target === "logo") {
+    };
+    for (const kind of ["logo", "favicon"]) {
+      $("#" + kind + "-upload").onclick = () => {
+        target = kind;
+        $("#branding-file").click();
+      };
+      $("#" + kind + "-clear").onclick = () => {
+        assetVersion[kind]++;
+        if (kind === "logo") {
+          logo = "";
+          logoIcon = "";
+        } else {
+          favicon = "";
+          faviconIcon = "";
+        }
+        renderAssets();
+      };
+      $("#" + kind + "-icon").onclick = () => {
+        const modalRoot = modal(
+          L("Выбрать значок", "Choose icon"),
+          "",
+          "<div data-brand-icon-picker></div>",
+          "",
+        );
+        window.VWSInfrastructure.iconPicker(
+          $("[data-brand-icon-picker]", modalRoot),
+          (kind === "logo" ? logoIcon : faviconIcon) || "shield-check",
+          H,
+          (name) => {
+            assetVersion[kind]++;
+            if (kind === "logo") {
+              logo = "";
+              logoIcon = name;
+            } else {
+              favicon = "";
+              faviconIcon = name;
+            }
+            renderAssets();
+            closeModal();
+          },
+        );
+        $("details", modalRoot).open = true;
+      };
+    }
+    $("#branding-file").onchange = async (e) => {
+      const file = e.target.files[0],
+        kind = target;
+      if (!file) return;
+      const version = ++assetVersion[kind];
+      assetBusy++;
+      syncAssetBusy();
+      try {
+        const data = await readImage(file, kind === "logo" ? 256 : 64);
+        if (!form.isConnected || assetVersion[kind] !== version) return;
+        if (kind === "logo") {
           logo = data;
-          $("#logo-preview").innerHTML = `<img src="${h(data)}" alt="">`;
+          logoIcon = "";
         } else {
           favicon = data;
-          $("#favicon-preview").innerHTML = `<img src="${h(data)}" alt="">`;
+          faviconIcon = "";
         }
-      } catch (err) {
-        toast(err.message, "error");
+        renderAssets();
+      } catch (error) {
+        if (form.isConnected) toast(error.message, "error");
+      } finally {
+        assetBusy--;
+        e.target.value = "";
+        syncAssetBusy();
       }
     };
-    $$("[data-color]").forEach(
-      (n) =>
-        (n.onclick = () =>
-          ($("[name=accent]", $("#brand-form")).value = n.dataset.color)),
+    const previewColors = () => {
+      const preview = $(".brand-style-preview");
+      preview.style.setProperty("--accent", form.elements.accent.value);
+      preview.style.setProperty("--icon-color", form.elements.icon_color.value);
+      for (const name of ["accent", "icon_color"]) {
+        $("[data-color-value=" + name + "]").textContent =
+          form.elements[name].value.toUpperCase();
+        $$(`[data-palette="${name}"]`).forEach((el) =>
+          el.setAttribute(
+            "aria-pressed",
+            String(
+              el.dataset.color.toLowerCase() ===
+                form.elements[name].value.toLowerCase(),
+            ),
+          ),
+        );
+      }
+    };
+    for (const name of ["accent", "icon_color"])
+      form.elements[name].oninput = previewColors;
+    $$("[data-palette]").forEach(
+      (el) =>
+        (el.onclick = () => {
+          form.elements[el.dataset.palette].value = el.dataset.color;
+          previewColors();
+        }),
     );
-    $("#brand-form").onsubmit = async (e) => {
+    $$("[data-color-default]").forEach(
+      (el) =>
+        (el.onclick = () => {
+          form.elements[el.dataset.colorDefault].value =
+            defaults[el.dataset.colorDefault];
+          previewColors();
+        }),
+    );
+    form.elements.wall_gap.oninput = (e) =>
+      ($(".brand-range output").textContent = e.target.value + " px");
+    renderAssets();
+    previewColors();
+    form.onsubmit = async (e) => {
       e.preventDefault();
-      const f = new FormData(e.target);
+      if (assetBusy) {
+        toast(
+          L(
+            "Дождитесь загрузки изображения",
+            "Wait for the image to finish loading",
+          ),
+        );
+        return;
+      }
+      const f = new FormData(form);
       try {
         const result = await api("/api/branding", {
           method: "POST",
@@ -1376,21 +1512,23 @@
             name: f.get("name"),
             subtitle: f.get("subtitle"),
             accent: f.get("accent"),
-            motion: $("[name=motion]", e.target).checked,
-            recorder_labels: f.get("recorder_labels"),
+            icon_color: f.get("icon_color"),
+            motion: form.elements.motion.checked,
             density: f.get("density"),
             corners: f.get("corners"),
             wall_gap: Number(f.get("wall_gap")),
-            show_clock: $("[name=show_clock]", e.target).checked,
+            show_clock: form.elements.show_clock.checked,
             logo,
             favicon,
+            logo_icon: logoIcon,
+            favicon_icon: faviconIcon,
           },
         });
         state.branding = result.branding;
         applyBrand();
         toast("Оформление сохранено");
-      } catch (err) {
-        toast(err.message, "error");
+      } catch (error) {
+        toast(error.message, "error");
       }
     };
   }
@@ -1443,7 +1581,7 @@
         )
         .join(
           "",
-        )}</div><label class="check-item"><input type="checkbox" name="hardware_diagnostics" ${s.diagnostics?.enabled !== false ? "checked" : ""}><span>${t("Диагностика оборудования")}<small>${t("Локальные журналы подключений и ошибок без паролей. Ротация до 8 МБ.")}</small></span></label></div><div class="modal-foot"><span></span><button type="submit" class="btn btn-primary">${icon("check")}${t("Применить настройки")}</button></div></div></form><div class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Информация о сервере")}</h2>${icon("server")}</div><div class="panel-body"><dl class="kv"><div><dt>${t("Версия")}</dt><dd>VWSHub 0.8</dd></div><div><dt>${t("Разработчик")}</dt><dd>sedukindv</dd></div><div><dt>GitHub</dt><dd><a href="https://github.com/sedukindv/VWSHub" target="_blank" rel="noopener">sedukindv/VWSHub ↗</a></dd></div><div><dt>${t("Время работы")}</dt><dd>${Math.floor(Number(m.uptime_seconds || 0) / 3600)}h ${Math.floor((Number(m.uptime_seconds || 0) % 3600) / 60)}m</dd></div><div><dt>RAM / process</dt><dd>${m.process_memory_mb ?? "—"} MB</dd></div></dl></div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Обслуживание сервера")}</h2></div><div class="panel-body form-stack"><p class="help">${t("Backup содержит учётные записи, зашифрованные пароли устройств и ключи. Храните его в защищённом месте.")}</p>${button("server-backup", "Скачать backup", "download")}${button("server-restore", "Восстановить backup", "upload")}${data.capabilities?.restart ? button("server-restart", "Перезапустить сервер", "refresh") : ""}</div></div></div></div>`,
+        )}</div><label class="check-item"><input type="checkbox" name="hardware_diagnostics" ${s.diagnostics?.enabled !== false ? "checked" : ""}><span>${t("Диагностика оборудования")}<small>${t("Локальные журналы подключений и ошибок без паролей. Ротация до 8 МБ.")}</small></span></label></div><div class="modal-foot"><span></span><button type="submit" class="btn btn-primary">${icon("check")}${t("Применить настройки")}</button></div></div></form><div class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Информация о сервере")}</h2>${icon("server")}</div><div class="panel-body"><dl class="kv"><div><dt>${t("Версия")}</dt><dd>VWSHub 0.8.5</dd></div><div><dt>${t("Разработчик")}</dt><dd>sedukindv</dd></div><div><dt>GitHub</dt><dd><a href="https://github.com/sedukindv/VWSHub" target="_blank" rel="noopener">sedukindv/VWSHub ↗</a></dd></div><div><dt>${t("Время работы")}</dt><dd>${Math.floor(Number(m.uptime_seconds || 0) / 3600)}h ${Math.floor((Number(m.uptime_seconds || 0) % 3600) / 60)}m</dd></div><div><dt>RAM / process</dt><dd>${m.process_memory_mb ?? "—"} MB</dd></div></dl></div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Обслуживание сервера")}</h2></div><div class="panel-body form-stack"><p class="help">${t("Backup содержит учётные записи, зашифрованные пароли устройств и ключи. Храните его в защищённом месте.")}</p>${button("server-backup", "Скачать backup", "download")}${button("server-restore", "Восстановить backup", "upload")}${data.capabilities?.restart ? button("server-restart", "Перезапустить сервер", "refresh") : ""}</div></div></div></div>`,
     );
     $("#settings-refresh").onclick = () =>
       renderSettings().catch((e) => toast(e.message, "error"));
@@ -1490,8 +1628,8 @@
         state.public_settings = {
           ...state.public_settings,
           ...result.settings,
-          max_live_streams:result.settings.resources.max_live_streams,
-          resource_profile:result.settings.resources.profile,
+          max_live_streams: result.settings.resources.max_live_streams,
+          resource_profile: result.settings.resources.profile,
         };
         toast("Настройки сохранены");
         renderSettings();
@@ -1632,6 +1770,10 @@
     input,
     readImage,
     showView,
+    page,
+    button,
+    ib,
+    empty,
   };
   window.VWSHub = H;
   $("#sidebar-collapse").onclick = () => {
@@ -1683,7 +1825,12 @@
       window.VWSHUB_BOOTSTRAP = current;
       await loadData();
       renderShell();
-      showView("live");
+      showView(
+        allowed(state.view)
+          ? state.view
+          : nav.find(([id]) => allowed(id))?.[0] || "live",
+      );
+      setInterval(pollCatalog, 2000);
     } catch (e) {
       $("#main-content").innerHTML = empty("Ничего не найдено", e.message);
       toast(e.message, "error");

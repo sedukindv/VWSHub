@@ -1,14 +1,31 @@
 (() => {
   "use strict";
+  document
+    .querySelectorAll("[data-icon]")
+    .forEach(
+      (node) => (node.innerHTML = window.VWSIcons.html(node.dataset.icon)),
+    );
+  if (
+    document.body.dataset.faviconIcon &&
+    document.body.dataset.hasFavicon !== "yes"
+  ) {
+    const link = document.createElement("link");
+    link.rel = "icon";
+    link.href = window.VWSIcons.dataURL(
+      document.body.dataset.faviconIcon,
+      getComputedStyle(document.body).getPropertyValue("--accent").trim(),
+    );
+    document.head.append(link);
+  }
   const en = {
     authHero: "Everything in view.<br><span>Even the past.</span>",
     authIntro:
       "Live video, XMEye recorder archives and device management in one workspace.",
     authLive: "An operator workspace",
-    authLiveSub: "Layouts, groups and quick camera access",
+    authLiveSub: "Layouts, spaces and quick camera access",
     authArchive: "Archive directly from your recorder",
     authArchiveSub: "No duplicate server recordings",
-    authAccess: "Access by role and group",
+    authAccess: "Access to cameras, spaces and zones",
     authAccessSub: "Give each user the cameras they need",
     loginTitle: "Sign in",
     loginIntro: "Open your video workspace.",

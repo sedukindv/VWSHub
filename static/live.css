@@ -123,6 +123,79 @@ body[data-view="live"] .main-content {
   display: grid;
   gap: 8px;
 }
+.wall-tree-modes {
+  display: flex;
+  gap: 4px;
+  margin: 2px 10px 9px;
+  padding: 3px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.wall-tree-modes button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+.wall-tree-modes button[aria-selected="true"] {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 4px #0000000c;
+}
+.wall-tree-modes .lucide {
+  width: 13px;
+  height: 13px;
+}
+.wall-tree-collection {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 3px 0;
+}
+.wall-tree-collection > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.wall-tree-collection > .lucide:last-child {
+  opacity: 0;
+}
+.wall-tree-collection:hover > .lucide:last-child {
+  opacity: 1;
+}
+.wall-tree-collection:hover > span {
+  color: var(--accent);
+}
+.wall-tree-list summary .lucide,
+.wall-tree-camera .lucide {
+  color: var(--icon-color, var(--muted));
+}
+.wall-tree-list details details {
+  margin-left: 0;
+}
+.wall-tree-list {
+  overflow-anchor: none;
+}
 .wall-tree-filters .field,
 .wall-tree-filters .select {
   font-size: 10px;
@@ -911,4 +984,80 @@ body[data-view="live"] .main-content {
     width: 20px;
     height: 18px;
   }
+}
+
+.wall-layouts {
+  border: 1px solid var(--line-strong);
+  background: var(--surface-alt);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 3px;
+}
+.wall-layouts > button {
+  color: var(--icon-color, var(--muted));
+  width: 32px;
+  min-width: 32px;
+  height: 29px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+.wall-layouts > button:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.wall-layouts > button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.wall-layout-diagram {
+  width: 22px;
+  height: 22px;
+}
+.wall-layout-numeric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.wall-layout-numeric .lucide {
+  width: 22px;
+  height: 22px;
+  opacity: 0.18;
+  color: inherit;
+}
+.wall-layout-numeric > span {
+  position: absolute;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.wall-tree-global {
+  padding: 5px 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.wall-tree-global > button {
+  padding: 8px;
+}
+.wall-tree-global > button > .lucide {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.wall-tree-global > button > .lucide:last-child {
+  width: 13px;
+  height: 13px;
+}
+.wall-tile-actions select {
+  width: 55px;
+  padding-right: 21px;
+  background-position: right 5px center;
+  background-size: 12px;
 }
