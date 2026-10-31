@@ -67,24 +67,12 @@ def test_recorder_name_is_independent_and_shared_by_channels(owner,catalog):
     assert public["recorder_name"]=="Main DVR" and "password" not in public
 
 
-def test_add_recorder_adds_only_missing_channels_and_preserves_credentials(owner,catalog,monkeypatch):
-    password=catalog.get_camera("cam_a")["password"]
-    monkeypatch.setattr("hub.catalog.recorder_channels",lambda *_:[{"channel":i,"name":f"Channel {i+1}"} for i in range(4)])
-    result=owner.post("/api/recorders",json={"name":"Recorder","protocol":"dvrip","ip":"192.0.2.1","port":34567,"password":"different","group_ids":["group_a"]})
-    assert result.status_code==201
-    assert len(result.json["created"])==3 and result.json["skipped"]==[0]
-    assert catalog.get_camera("cam_a")["password"]==password
-    assert len(catalog.store.get_groups()[0]["camera_ids"])==4
-    assert len({c["recorder_id"] for c in catalog.store.get_devices() if c["protocol"]=="dvrip"})==1
-
-
-def test_failed_recorder_probe_does_not_create_fake_channels(owner,catalog,monkeypatch):
+def test_legacy_recorder_add_cannot_create_channels_without_selection(owner,catalog,monkeypatch):
+    probe=Mock();monkeypatch.setattr("hub.catalog.recorder_channels",probe)
     before=catalog.store.get_devices()
-    def fail(*_):raise ConnectionError("password=never-return-this")
-    monkeypatch.setattr("hub.catalog.recorder_channels",fail)
-    response=owner.post("/api/recorders",json={"name":"Unavailable","ip":"192.0.2.45"})
-    assert response.status_code==502 and "never-return-this" not in response.get_data(as_text=True)
-    assert catalog.store.get_devices()==before
+    response=owner.post("/api/recorders",json={"name":"Recorder","ip":"192.0.2.1"})
+    assert response.status_code==410 and catalog.store.get_devices()==before
+    probe.assert_not_called()
 
 
 def test_onvif_channels_are_unique_sources_with_actual_rtsp_paths(catalog,monkeypatch):
@@ -115,39 +103,12 @@ def test_status_retries_control_port_then_reports_rtsp_evidence(owner,catalog,mo
     assert [call.args[0][1] for call in probe.call_args_list]==[34567,34567,554]
 
 
-def test_camera_import_rejects_entire_invalid_batch_and_default_export_omits_passwords(owner,catalog):
+def test_legacy_camera_import_requires_preview_and_export_omits_secrets(owner,catalog):
     exported=owner.get("/api/cameras/export").json
     assert exported["format"]=="vwshub.cameras" and all("password" not in c for c in exported["cameras"])
     before=catalog.store.get_devices()
-    data={"format":"vwshub.cameras","version":1,"cameras":[{"name":"Good","ip":"192.0.2.99"},{"name":"Bad","ip":"http://not-a-host"}]}
-    assert owner.post("/api/cameras/import",json=data).status_code==400
-    assert catalog.store.get_devices()==before
-    data["cameras"]=data["cameras"][:1];data["recorders"]=[{"connection_key":"dvrip|192.0.2.99|34567","name":""}]
-    assert owner.post("/api/cameras/import",json=data).status_code==400
-    assert catalog.store.get_devices()==before
     response=owner.post("/api/cameras/import",json=exported)
-    assert response.status_code==200 and response.json["skipped"]==2 and response.json["imported"]==0
-    assert catalog.store.get_devices()==before
-
-
-def test_camera_import_preserves_distinct_aliases_of_the_same_endpoint(owner,catalog):
-    response=owner.post("/api/cameras/import",json={"format":"vwshub.cameras","version":1,"cameras":[
-        {"id":"alias_a","name":"Entrance wide","ip":"192.0.2.99","channel":0},
-        {"id":"alias_b","name":"Entrance duplicate","ip":"192.0.2.99","channel":0}]})
-    assert response.status_code==200 and response.json["imported"]==2
-    assert catalog.get_camera("alias_a") and catalog.get_camera("alias_b")
-
-
-def test_import_updates_invalidate_connections_but_name_only_changes_keep_video(app,owner,catalog):
-    invalidate=Mock();app.extensions["vwshub_invalidate_camera"]=invalidate
-    data=owner.get("/api/cameras/export").json;data["mode"]="update"
-    data["cameras"][0]["name"]="New label"
-    assert owner.post("/api/cameras/import",json=data).status_code==200
-    invalidate.assert_not_called()
-    data["cameras"][0]["ip"]="192.0.2.88"
-    assert owner.post("/api/cameras/import",json=data).status_code==200
-    invalidate.assert_called_once_with("cam_a")
-
+    assert response.status_code==410 and catalog.store.get_devices()==before
 
 
 def backup_with(raw,filename,value):
@@ -163,6 +124,9 @@ def test_legacy_07_backup_without_recorder_metadata_remains_restorable(owner,cat
         for name in source.namelist():
             if name=="data/recorders.json":continue
             content=source.read(name)
+            if name=="data/settings.json":
+                values=json.loads(content);values.pop("schema_version",None);values.pop("catalog_origin",None)
+                content=json.dumps(values).encode()
             if name=="data/devices.json":
                 values=json.loads(content)
                 for value in values:value.pop("recorder_id",None)

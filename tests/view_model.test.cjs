@@ -7,7 +7,7 @@ const view=(cells=[],columns=2)=>({format:'vwshub.view',version:1,columns,cells}
 test('valid imported view preserves camera order, stream and explicit blank cells',()=>{
   const input=view([{camera_id:'yard',stream:'main'},null,{camera_id:'front',stream:'sub'}],3);
   const output=V.normalize(input,cameras);
-  assert.deepEqual(output,{...input,version:2,layout:"9",unavailable:0});
+  assert.deepEqual(output,{...input,version:3,layout:"9",unavailable:0});
   assert.notStrictEqual(output.cells[0],input.cells[0]);
 });
 
@@ -42,14 +42,14 @@ for(const cell of [{},{camera_id:7,stream:'main'},{camera_id:'x'.repeat(151),str
 
 test('serialized view contains only portable IDs/streams, never URLs, passwords or internal UIDs',()=>{
   const output=V.serialize(2,[{uid:91,camera_id:'front',stream:'main',password:'sensitive',ip:'192.0.2.1',url:'rtsp://credentials'},null,{camera_id:'yard',stream:'invalid'}]);
-  assert.deepEqual(output,{...view([{camera_id:'front',stream:'main'},null,{camera_id:'yard',stream:'sub'}]),version:2,layout:"4"});
+  assert.deepEqual(output,{...view([{camera_id:'front',stream:'main'},null,{camera_id:'yard',stream:'sub'}]),version:3,layout:"4"});
   assert.ok(!/sensitive|192\.0\.2|rtsp|uid|password/.test(JSON.stringify(output)));
 });
 
 test('normalization ignores untrusted extra keys and JSON prototype payloads',()=>{
   const input=JSON.parse('{"format":"vwshub.view","version":1,"columns":2,"cells":[{"camera_id":"front","stream":"main","__proto__":{"administrator":true},"password":"secret"}],"__proto__":{"administrator":true},"constructor":{"prototype":{"administrator":true}},"credentials":"secret"}');
   const result=V.normalize(input,cameras);
-  assert.deepEqual(result,{...view([{camera_id:'front',stream:'main'}]),version:2,layout:'4',unavailable:0});
+  assert.deepEqual(result,{...view([{camera_id:'front',stream:'main'}]),version:3,layout:'4',unavailable:0});
   assert.equal(Object.prototype.administrator,undefined);
   assert.equal(result.administrator,undefined);
   assert.equal(Object.hasOwn(result,'__proto__'),false);
@@ -60,6 +60,45 @@ test('export/import round trip retains duplicate camera tiles and blank position
   const cells=[{camera_id:'front',stream:'main'},null,{camera_id:'front',stream:'sub'},null];
   const output=V.normalize(JSON.parse(JSON.stringify(V.serialize(4,cells))),cameras);
   assert.equal(output.columns,4);assert.deepEqual(output.cells,cells);assert.equal(output.unavailable,0);
+});
+
+test('hidden inventory records are never accepted as visible saved-view sources',()=>{
+  const value=V.serialize('4',[{camera_id:'front',stream:'main'},null,{camera_id:'yard',stream:'sub'}]);
+  const result=V.normalize(value,[{id:'front',is_hidden:true},{id:'yard'}]);
+  assert.deepEqual(result.cells,[null,null,{camera_id:'yard',stream:'sub'}]);
+});
+
+test('hide and unhide cannot revive an old saved assignment or shift neighbours',()=>{
+  const cells=[{uid:1,camera_id:'front',stream:'main'},null,{uid:3,camera_id:'yard',stream:'sub'}];
+  const available=[{id:'front',visibility_revision:1234},{id:'yard'}];
+  assert.deepEqual(V.reconcile(cells,available),[null,null,cells[2]]);
+  const old=V.serialize('4',cells);
+  assert.deepEqual(V.normalize(old,available).cells,[null,null,{camera_id:'yard',stream:'sub'}]);
+  const explicit=V.serialize('4',[{camera_id:'front',stream:'main',visibility_revision:1234}]);
+  assert.equal(V.normalize(explicit,available).cells[0].camera_id,'front');
+});
+
+test('portable view resolves an imported identity without selecting a local ID collision',()=>{
+  const value=V.serialize('4',[{camera_id:'front',stream:'main',origin_id:'foreign',source_id:'front'}]);
+  const catalog=[{id:'front',origin_id:'local'},{id:'imported_front',origin_id:'foreign',import_id:'front'}];
+  assert.equal(V.normalize(value,catalog).cells[0].camera_id,'imported_front');
+  assert.deepEqual(V.normalize(value,[catalog[0]]).cells,[null]);
+});
+
+test('space collection follows root and zone order while skipping hidden and missing sources',()=>{
+  const catalog=[{id:'a'},{id:'b',is_hidden:true},{id:'c'},{id:'d'}];
+  const spaces=[{id:'shop',zones:[{id:'back'},{id:'front'}],members:[{channel_id:'c',zone_id:'front'},{channel_id:'b',zone_id:'back'},{channel_id:'a',zone_id:null},{channel_id:'missing',zone_id:'back'},{channel_id:'d',zone_id:'back'}],camera_ids:['a','b','c','d']}];
+  assert.deepEqual(V.collection(catalog,spaces,{kind:'space',id:'shop'}).map(c=>c.id),['a','d','c']);
+  assert.deepEqual(V.collection(catalog,spaces,{kind:'zone',space_id:'shop',id:'back'}).map(c=>c.id),['d']);
+  assert.deepEqual(V.collection(catalog,spaces,{kind:'space',id:'shop',root_only:true}).map(c=>c.id),['a']);
+});
+
+test('recorder collection includes every open source and preserves multi-page capacity',()=>{
+  const catalog=Array.from({length:95},(_,i)=>({id:'c'+i,recorder_id:i<83?'recorder':'other',is_hidden:i===22}));
+  const selected=V.collection(catalog,[],{kind:'device',id:'recorder'});
+  assert.equal(selected.length,82);assert.equal(V.fit(selected.length),'64');
+  assert.equal(Math.ceil(selected.length/V.layout(V.fit(selected.length)).count),2);
+  assert.ok(!selected.some(c=>c.id==='c22'));
 });
 
 for(const [count,expected] of [[1,'1'],[4,'4'],[5,'6'],[6,'6'],[7,'8'],[8,'8'],[9,'9'],[10,'16'],[17,'25'],[26,'36'],[37,'64'],[64,'64'],[65,'64'],[256,'64']])
