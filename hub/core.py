@@ -28,8 +28,9 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash,generate_password_hash
 
 from .store import DataStore,DataCorruptError,DEFAULT_SETTINGS,safe_image
+from . import access, schema
 
-VERSION="0.8"
+VERSION="0.8.5"
 DEVELOPER="sedukindv"
 REPOSITORY="https://github.com/sedukindv/VWSHub"
 LOGIN_RE=re.compile(r"[A-Za-z0-9_.@-]{1,64}\Z")
@@ -40,7 +41,8 @@ def public_user(user):
     return {"username":user.get("username",""),"login":user.get("username",""),"alias":user.get("alias") or user.get("username",""),
             "avatar":user.get("avatar", ""),"role":user.get("role","viewer"),"theme":user.get("theme","auto"),"language":user.get("language","ru"),
             "group_ids":list(user.get("group_ids",[])),"group_access":{gid:user.get("group_access",{}).get(gid,"read") for gid in user.get("group_ids",[])},
-            "archive_access":user.get("role")=="admin" or bool(user.get("archive_access",False))}
+            "archive_access":access.features(user)["archive_view"],"permissions":access.features(user),
+            "grants":access.grants(user),"active":user.get("active",True),"can_edit":access.editor(user),"pending_grants":user.get("pending_grants",[])}
 
 def public_device(device,connection=True):
     private={"password","password_hash","secret"}
@@ -97,26 +99,64 @@ class Runtime:
         name=session.get("username")
         if session.get("auth_epoch")!=self.settings().get("auth_epoch"):
             g.vwshub_user=None;return None
-        g.vwshub_user=next((u for u in self.store.get_users() if u.get("username")==name),None) if name else None
+        g.vwshub_user=dict(self.user_catalog().get(name,{})) or None if name else None
+        if g.vwshub_user and g.vwshub_user.get("active") is False:g.vwshub_user=None
         return g.vwshub_user
-    def get_camera(self,cam_id):return next((c for c in self.store.get_devices() if c.get("id")==str(cam_id)),None)
+    def user_catalog(self):
+        with self.store.lock:
+            if getattr(self,"_users_revision",None)!=self.store.revision:
+                self._user_catalog={u["username"]:u for u in self.store.get_users()}
+                self._users_revision=self.store.revision
+            return self._user_catalog
+    def catalog_index(self):
+        with self.store.lock:
+            if getattr(self,"_catalog_revision",None)!=self.store.revision:
+                self._catalog={"cameras":{c["id"]:c for c in self.store.get_devices()},"spaces":self.store.get_groups(),
+                               "parents":{d["id"]:d for d in self.store.get_recorders()}}
+                self._catalog_revision=self.store.revision
+            return self._catalog
+    def get_camera(self,cam_id):
+        camera=self.catalog_index()["cameras"].get(str(cam_id))
+        return dict(camera) if camera else None
     def settings(self):return self.store.get_settings()
     def can_access_archive(self,user=None):
         user=user if user is not None else self.current_user()
-        return bool(user and (user.get("role")=="admin" or user.get("archive_access") is True))
+        return bool(user and user.get("active") is not False and access.features(user)["archive_view"])
+    def can_export_archive(self,user=None):
+        user=user if user is not None else self.current_user()
+        return bool(user and user.get("active") is not False and access.features(user)["archive_export"])
+    def catalog_devices(self,user=None):
+        user=user if user is not None else self.current_user()
+        if not user or user.get("active") is False:return []
+        index=self.policy_index(user)
+        return [c for c in index["cameras"].values() if index["levels"].get(c["id"],0)>0]
+    def policy_index(self,user):
+        # All callers obtain users from the persisted catalog. Catalog writes invalidate the index.
+        with self.store.lock:
+            revision=self.store.revision
+            if getattr(self,"_policy_revision",None)!=revision:
+                self._policy_revision=revision;self._policy_indexes={}
+            key=user.get("username")
+            if key not in self._policy_indexes:
+                # A request may still hold g.user from before a concurrent revoke.
+                # Never use that old object to populate a newer revision's cache.
+                persisted=self.user_catalog().get(key)
+                catalog=self.catalog_index()
+                levels,memberships=access.source_levels(persisted,catalog["cameras"].values(),catalog["spaces"])
+                if len(self._policy_indexes)>=64:self._policy_indexes.pop(next(iter(self._policy_indexes)))
+                self._policy_indexes[key]={"cameras":catalog["cameras"],"levels":levels,"memberships":memberships,"parents":catalog["parents"]}
+            return self._policy_indexes[key]
     def visible_devices(self,user=None):
         user=user if user is not None else self.current_user()
-        if not user:return []
-        devices=self.store.get_devices()
-        if user.get("role")=="admin":return devices
-        allowed=set(user.get("group_ids",[]))
-        visible={cid for group in self.store.get_groups() if group.get("id") in allowed for cid in group.get("camera_ids",[])}
-        return [device for device in devices if device.get("id") in visible]
-    def can_access_camera(self,user,cam_id):return any(c.get("id")==str(cam_id) for c in self.visible_devices(user))
+        return [device for device in self.catalog_devices(user) if not device.get("is_hidden")]
+    def can_access_camera(self,user,cam_id):
+        if not user or user.get("active") is False:return False
+        index=self.policy_index(user);camera=index["cameras"].get(str(cam_id))
+        return bool(camera and not camera.get("is_hidden") and index["levels"].get(str(cam_id),0))
     def can_edit_group(self,user,group_id):
-        return bool(user and (user.get("role")=="admin" or group_id in user.get("group_ids",[]) and user.get("group_access",{}).get(group_id)=="edit"))
+        return access.level(user,"spaces",group_id)==2
     def can_edit_camera(self,user,cam_id):
-        return bool(user and (user.get("role")=="admin" or any(cam_id in g.get("camera_ids",[]) and self.can_edit_group(user,g["id"]) for g in self.store.get_groups())))
+        return bool(user and self.policy_index(user)["levels"].get(str(cam_id),0)==2)
     def audit(self,action,detail=None):
         user=self.current_user()
         self.store.audit(user.get("username") if user else "system",action,detail)
@@ -125,6 +165,14 @@ class Runtime:
 def csrf_token():
     if not session.get("csrf_token"):session["csrf_token"]=secrets.token_urlsafe(32)
     return session["csrf_token"]
+
+
+def validate_user_grants(user,runtime):
+    spaces=runtime.store.get_groups()
+    known={"spaces":{s["id"] for s in spaces},"zones":{z["id"] for s in spaces for z in s.get("zones",[])},
+           "channels":{c["id"] for c in runtime.store.get_devices()},"devices":{d["id"] for d in runtime.store.get_recorders()}}
+    if any(set(scope)-known[kind] for kind,scope in access.grants(user).items()):
+        raise ValueError("Выбран несуществующий объект доступа. Обновите каталог")
 
 def public_settings(runtime):
     settings=runtime.settings()
@@ -146,14 +194,43 @@ def request_user_payload(data,existing=None):
     result["language"]=data.get("language",result.get("language","ru"))
     if not isinstance(result["language"],str) or result["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
     result["group_ids"]=ids(data.get("group_ids",result.get("group_ids",[])),"Группы пользователя")
-    access=data.get("group_access",{gid:level for gid,level in result.get("group_access",{}).items() if gid in result["group_ids"]})
-    if not isinstance(access,dict) or set(access)-set(result["group_ids"]) or any(not isinstance(v,str) or v not in {"read","edit"} for v in access.values()):raise ValueError("Права групп: только read/edit для назначенных групп")
-    result["group_access"]={gid:access.get(gid,"read") for gid in result["group_ids"]}
+    group_access=data.get("group_access",{gid:level for gid,level in result.get("group_access",{}).items() if gid in result["group_ids"]})
+    if not isinstance(group_access,dict) or set(group_access)-set(result["group_ids"]) or any(not isinstance(v,str) or v not in {"read","edit"} for v in group_access.values()):raise ValueError("Права групп: только read/edit для назначенных групп")
+    result["group_access"]={gid:group_access.get(gid,"read") for gid in result["group_ids"]}
     if "archive_access" in data and not isinstance(data["archive_access"],bool):raise ValueError("archive_access: ожидается логическое значение")
     result["archive_access"]=True if result["role"]=="admin" else data.get("archive_access",result.get("archive_access",False))
+    if "active" in data:
+        if not isinstance(data["active"],bool):raise ValueError("active: ожидается логическое значение")
+        result["active"]=data["active"]
+    if "grants" in data:
+        value=data["grants"]
+        if not isinstance(value,dict) or set(value)-set(access.KINDS):raise ValueError("Некорректные области доступа")
+        clean={}
+        for kind in access.KINDS:
+            scope=value.get(kind,{})
+            if not isinstance(scope,dict) or len(scope)>4096:raise ValueError("Некорректная область доступа")
+            ids(list(scope))
+            if any(v not in ("read","edit") for v in scope.values()):raise ValueError("Права: read или edit")
+            clean[kind]=dict(scope)
+        result["grants"]=clean;result["group_ids"]=list(clean["spaces"]);result["group_access"]=clean["spaces"]
+    elif "group_ids" in data or "group_access" in data:
+        result["grants"]={**access.grants(result),"spaces":dict(result["group_access"])}
+    if "permissions" in data:
+        value=data["permissions"]
+        if isinstance(value,dict) and "create_spaces" in value:
+            value=dict(value);legacy=value.pop("create_spaces")
+            if not isinstance(legacy,bool):raise ValueError("Некорректные разрешения")
+            value.setdefault("edit_spaces",bool(legacy or any(v=="edit" for kind in ("spaces","zones") for v in access.grants(result)[kind].values())))
+        if not isinstance(value,dict) or set(value)-set(access.FEATURES) or any(not isinstance(v,bool) for v in value.values()):raise ValueError("Некорректные разрешения")
+        result["permissions"]={**access.features(result),**value}
+        if result["permissions"]["archive_export"] and not result["permissions"]["archive_view"]:raise ValueError("Для скачивания нужен просмотр архива")
+    elif "archive_access" in data:
+        result["permissions"]={**access.features(result),"archive_view":result["archive_access"]}
     if data.get("password"):result["password_hash"]=generate_password_hash(password(data["password"]))
     elif not existing:raise ValueError("Укажите пароль нового пользователя")
-    return result
+    if result.get("active",True) and not result.get("password_hash"):raise ValueError("Для активации задайте пароль пользователя")
+    if data.get("clear_pending_grants") is True:result["pending_grants"]=[]
+    return access.normalize_user(result)
 
 def validate_device(data,existing,runtime):
     source=dict(existing or {});source.update(data)
@@ -188,6 +265,8 @@ def validate_device(data,existing,runtime):
             if key=="profile_token":result[key]=text(source[key],"Профиль ONVIF",256)
             elif not isinstance(source[key],bool):raise ValueError("audio_enabled: ожидается логическое значение")
             else:result[key]=source[key]
+    for key in ("recorder_id","source_key","source_token","is_hidden","visibility_revision","origin_id","import_id","alias_of"):
+        if existing and key in existing:result[key]=existing[key]
     return result
 
 
@@ -201,6 +280,7 @@ def register_core(app,runtime):
     app.extensions["vwshub"]=runtime
     @app.before_request
     def protect_request():
+        g.catalog_start_revision=runtime.store.revision
         if getattr(runtime,"maintenance",False) and request.endpoint!="health":return jsonify(error="Восстанавливается backup. Повторите запрос через несколько секунд"),503
         is_api=request.path.startswith("/api/")
         public=request.endpoint in {"static","login","setup","health","bootstrap","favicon"} or request.path=="/api/branding" and request.method=="GET"
@@ -220,6 +300,9 @@ def register_core(app,runtime):
 
     @app.after_request
     def response_headers(response):
+        media=app.extensions.get("vwshub_media")
+        if media and getattr(g,"catalog_start_revision",runtime.store.revision)!=runtime.store.revision:
+            media.reconcile_permissions()
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Referrer-Policy"]="same-origin"
         response.headers["X-Frame-Options"]="SAMEORIGIN"
@@ -272,7 +355,7 @@ def register_core(app,runtime):
             if len(recent)>=8:return jsonify(error="Слишком много попыток. Повторите через минуту."),429
             recent.append(now)
         user=next((u for u in runtime.store.get_users() if u.get("username")==login_name),None)
-        if not user or not check_password_hash(user.get("password_hash",""),supplied):
+        if not user or user.get("active") is False or not check_password_hash(user.get("password_hash",""),supplied):
             runtime.store.audit(login_name or "anonymous","auth.login_failed",{})
             return (jsonify(error="Неверный логин или пароль"),401) if request.is_json else (template("login.html",error="Неверный логин или пароль"),401)
         with runtime.login_lock:runtime.login_attempts.pop(address,None)
@@ -321,9 +404,8 @@ def register_core(app,runtime):
     def users():
         if request.method=="GET":return jsonify([public_user(u) for u in runtime.store.get_users()])
         data=body();new=request_user_payload(data)
-        known={g["id"] for g in runtime.store.get_groups()}
-        if set(new["group_ids"])-known:raise ValueError("Выбрана несуществующая группа")
         with runtime.store.lock:
+            validate_user_grants(new,runtime)
             values=runtime.store.get_users()
             if any(u["username"].casefold()==new["username"].casefold() for u in values):return jsonify(error="Логин уже существует"),409
             if len(values)>=1000:raise ValueError("Каталог поддерживает до 1000 пользователей")
@@ -341,8 +423,8 @@ def register_core(app,runtime):
                 values.remove(old)
             else:
                 data=body();data["username"]=username;new=request_user_payload(data,old)
-                if username==runtime.current_user()["username"] and new["role"]!="admin":raise ValueError("Нельзя понизить роль текущего администратора")
-                if set(new["group_ids"])-{g["id"] for g in runtime.store.get_groups()}:raise ValueError("Выбрана несуществующая группа")
+                if username==runtime.current_user()["username"] and (new["role"]!="admin" or not new["active"]):raise ValueError("Нельзя отключить или понизить роль текущего администратора")
+                validate_user_grants(new,runtime)
                 if old.get("role")=="admin" and new["role"]!="admin" and sum(u.get("role")=="admin" for u in values)<2:raise ValueError("Нельзя понизить последнего администратора")
                 values[values.index(old)]=new
             runtime.store.save_users(values)
@@ -436,7 +518,9 @@ def register_core(app,runtime):
             permitted=set(new["camera_ids"]) if me["role"]=="admin" else set(new["camera_ids"])&set(old.get("camera_ids",[]))
             if set(camera_names)-permitted:raise ValueError("Переименование доступно только для камер этой группы")
             camera_names={cid:text(name,"Название камеры",150,True) for cid,name in camera_names.items()}
-            if old:values[values.index(old)]=new
+            if old:
+                new={**old,**new}
+                values[values.index(old)]=new
             else:
                 if len(values)>=1000:raise ValueError("Каталог поддерживает до 1000 групп")
                 values.append(new)
@@ -456,6 +540,9 @@ def register_core(app,runtime):
             runtime.store.save_groups([g for g in values if g["id"]!=group_id]);users=runtime.store.get_users()
             for user in users:
                 user["group_ids"]=[x for x in user.get("group_ids",[]) if x!=group_id]
+                user.get("grants",{}).get("spaces",{}).pop(group_id,None)
+                removed=next(g for g in values if g["id"]==group_id)
+                for zone in removed.get("zones",[]):user.get("grants",{}).get("zones",{}).pop(zone["id"],None)
                 user.get("group_access",{}).pop(group_id,None)
             runtime.store.save_users(users)
         runtime.audit("group.deleted",{"id":group_id});return jsonify(success=True)
@@ -467,22 +554,7 @@ def register_core(app,runtime):
     @app.post("/api/groups/import")
     @admin_required
     def import_groups():
-        data=body();incoming=data.get("groups")
-        if data.get("format","vwshub.groups")!="vwshub.groups" or not isinstance(incoming,list) or len(incoming)>1000:raise ValueError("Некорректный файл групп VWSHub")
-        with runtime.store.lock:
-            known={d["id"] for d in runtime.store.get_devices()};values=runtime.store.get_groups();validated=[]
-            for item in incoming:
-                if not isinstance(item,dict):raise ValueError("Некорректная группа")
-                gid=item.get("id") or "grp_"+uuid.uuid4().hex
-                if not isinstance(gid,str) or not IDENTIFIER_RE.fullmatch(gid):raise ValueError("Некорректный идентификатор группы")
-                members=ids(item.get("camera_ids",[]),"Камеры группы")
-                if set(members)-known:raise ValueError("Файл ссылается на камеры, отсутствующие на этом сервере")
-                validated.append({"id":gid,"name":text(item.get("name"),"Название группы",100,True),"camera_ids":members})
-            if len({x["id"] for x in validated})!=len(validated):raise ValueError("В файле повторяются идентификаторы групп")
-            merged={g["id"]:g for g in values};merged.update({g["id"]:g for g in validated})
-            if len(merged)>1000:raise ValueError("Каталог поддерживает до 1000 групп")
-            runtime.store.save_groups(list(merged.values()))
-        runtime.audit("groups.imported",{"count":len(validated)});return jsonify(success=True,imported=len(validated))
+        return jsonify(error="Прямой импорт отключён. Используйте /api/transfers/spaces/preview и /api/transfers/spaces/apply."),410
 
     @app.post("/api/cameras/status")
     def camera_status():
@@ -544,9 +616,14 @@ def register_core(app,runtime):
             if key in data:brand[key]=text(data[key],"Название" if key=="name" else "Подпись",80,key=="name")
         for key in ("logo","favicon"):
             if key in data:brand[key]=safe_image(data[key])
-        if "accent" in data:
-            if not isinstance(data["accent"],str) or not re.fullmatch(r"#[0-9a-fA-F]{6}",data["accent"]):raise ValueError("Цвет: #RRGGBB")
-            brand["accent"]=data["accent"]
+        for key in ("logo_icon","favicon_icon"):
+            if key in data:
+                if not isinstance(data[key],str):raise ValueError("Некорректное имя значка")
+                brand[key]="" if data[key]=="" else schema.icon(data[key])
+        for color_key in ("accent","icon_color"):
+            if color_key in data:
+                if not isinstance(data[color_key],str) or not re.fullmatch(r"#[0-9a-fA-F]{6}",data[color_key]):raise ValueError("Цвет: #RRGGBB")
+                brand[color_key]=data[color_key]
         if "motion" in data:
             if not isinstance(data["motion"],bool):raise ValueError("Анимация: логическое значение")
             brand["motion"]=data["motion"]
@@ -660,4 +737,8 @@ def create_app(data_dir=None,config=None):
         from .media import register_media
         from .devices import register_devices
         register_media(app,runtime);register_devices(app,runtime)
+    from .workspace import register_workspace
+    register_workspace(app,runtime)
+    from .transfers import register_transfers
+    register_transfers(app,runtime)
     return app

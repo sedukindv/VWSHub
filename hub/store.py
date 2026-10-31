@@ -16,8 +16,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from werkzeug.security import generate_password_hash
 
 DEFAULT_SETTINGS = {
-    "branding": {"name":"VWSHub", "subtitle":"Video workspace", "logo":"", "favicon":"", "accent":"#668bff", "motion":True,
-                 "recorder_labels":"ip", "density":"comfortable", "corners":"rounded", "show_clock":True, "wall_gap":3},
+    "branding": {"name":"VWSHub", "subtitle":"Video workspace", "logo":"", "favicon":"", "logo_icon":"", "favicon_icon":"", "accent":"#526cf5", "motion":True,
+                 "recorder_labels":"ip", "density":"comfortable", "corners":"rounded", "show_clock":True, "wall_gap":3,
+                 "icon_color":"#71809c"},
     "diagnostics":{"enabled":True},
     "timezone":"Asia/Omsk", "language":"ru", "snapshot_format":"jpeg", "archive_format":"mp4",
     "resources": {"profile":"standard", "max_live_streams":16, "max_archive_streams":4,
@@ -88,7 +89,7 @@ class DataStore:
         self.base_dir=Path(base_dir).resolve()
         self.base_dir.mkdir(parents=True,exist_ok=True)
         protected(self.base_dir,True)
-        self._cache={}
+        self._cache={};self.revision=0
         self.lock=DataLock(self.base_dir/".store.lock")
         with self.lock:self._initialize(legacy_dir)
 
@@ -102,9 +103,17 @@ class DataStore:
         self.recorders_file=self.base_dir/"recorders.json"
         self.audit_file=self.base_dir/"audit.jsonl"
         self._migrate(Path(legacy_dir).resolve() if legacy_dir else self.base_dir.parent)
+        if self.settings_file.exists():
+            existing_settings=self._read(self.settings_file)
+            if not isinstance(existing_settings,dict):raise DataCorruptError("Неверный формат settings.json; исходник не перезаписан")
+            schema_version=existing_settings.get("schema_version",0)
+            if type(schema_version) is not int or schema_version not in (0,1,2,3):
+                raise DataCorruptError("Неизвестная версия данных. Используйте совместимую версию VWSHub; исходные данные не изменены")
         self.key_file=self.base_dir/".camkey"
         if not self.key_file.exists():
-            if self.devices_file.exists() and any(str(d.get("password","")).startswith("enc:") for d in self._read(self.devices_file) if isinstance(d,dict)):
+            encrypted_sources=self.devices_file.exists() and any(str(d.get("password","")).startswith("enc:") for d in self._read(self.devices_file) if isinstance(d,dict))
+            encrypted_parents=self.recorders_file.exists() and any(str(d.get("connection",{}).get("password","")).startswith("enc:") for d in self._read(self.recorders_file) if isinstance(d,dict))
+            if encrypted_sources or encrypted_parents:
                 raise DataCorruptError("Найдены зашифрованные пароли устройств. Перенесите исходный .camkey в data/; новый ключ не создан")
             self._write_bytes(self.key_file,Fernet.generate_key())
         self.fernet=Fernet(self.key_file.read_bytes().strip())
@@ -115,6 +124,8 @@ class DataStore:
             elif not isinstance(self._read(path),list): raise DataCorruptError(f"Неверный формат {path.name}; исходник не перезаписан")
         if not self.settings_file.exists(): self._write(self.settings_file,copy.deepcopy(DEFAULT_SETTINGS))
         self._normalize_legacy()
+        from .structure import initialize_catalog
+        initialize_catalog(self)
         self.save_devices(self.get_devices())
 
     @staticmethod
@@ -122,18 +133,12 @@ class DataStore:
         return "|".join([str(device.get("protocol","dvrip")),str(device.get("ip","")).lower(),str(device.get("port",34567 if device.get("protocol","dvrip")=="dvrip" else 80))])
 
     def catalog_values(self,devices,recorder_names=None):
-        recorders=self._read(self.recorders_file);by_key={r["connection_key"]:r for r in recorders}
-        for camera in devices:
-            key=self.connection_key(camera)
-            if key not in by_key:
-                item={"id":"rec_"+hashlib.sha256(key.encode()).hexdigest()[:24],"connection_key":key,
-                      "name":("Регистратор " if camera.get("protocol","dvrip")=="dvrip" else "IP-устройство ")+str(len(recorders)+1)}
-                by_key[key]=item;recorders.append(item)
-            camera["recorder_id"]=by_key[key]["id"]
-        for recorder in recorders:
-            if recorder["connection_key"] in (recorder_names or {}):recorder["name"]=recorder_names[recorder["connection_key"]]
-        active={self.connection_key(camera) for camera in devices}
-        return devices,[r for r in recorders if r["connection_key"] in active]
+        from .structure import physical_catalog
+        cameras,physical=physical_catalog(devices,self._read(self.recorders_file),self.connection_key,recorder_names)
+        origin=self.get_settings().get("catalog_origin")
+        if origin:
+            for item in cameras+physical:item.setdefault("origin_id",origin)
+        return cameras,physical
 
     def _reconcile_recorders(self,devices):
         devices,recorders=self.catalog_values(devices)
@@ -177,9 +182,21 @@ class DataStore:
 
     def save_catalog(self,devices,groups,recorder_names=None):
         with self.lock:
+            from .structure import normalize_spaces
             devices,recorders=self.catalog_values(devices,recorder_names)
-            self.transaction({name:json.dumps(value,ensure_ascii=False,allow_nan=False).encode("utf-8") for name,value in
-                              {"devices.json":devices,"groups.json":groups,"recorders.json":recorders}.items()})
+            groups=normalize_spaces(groups,devices)
+            payload={"devices.json":devices,"groups.json":groups,"recorders.json":recorders}
+            valid={"channels":{c["id"] for c in devices},"devices":{d["id"] for d in recorders},
+                   "spaces":{s["id"] for s in groups},"zones":{z["id"] for s in groups for z in s.get("zones",[])}}
+            users=self.get_users();changed=False
+            for user in users:
+                for kind,known in valid.items():
+                    grants=user.get("grants",{}).get(kind,{})
+                    for resource_id in set(grants)-known:grants.pop(resource_id);changed=True
+            if changed:
+                from .access import normalize_user
+                payload["users.json"]=[normalize_user(u) for u in users]
+            self.transaction({name:json.dumps(value,ensure_ascii=False,allow_nan=False).encode("utf-8") for name,value in payload.items()})
 
     def _migrate(self, legacy):
         roots=list(dict.fromkeys([self.base_dir,legacy]))
@@ -264,6 +281,7 @@ class DataStore:
                 protected(temporary);stream.write(content);stream.flush();os.fsync(stream.fileno())
             os.replace(temporary,path);protected(path)
             self._cache.pop(str(path),None)
+            if path.name in {"users.json","devices.json","recorders.json","groups.json","settings.json"}:self.revision+=1
         finally:
             if temporary.exists():temporary.unlink()
 
@@ -289,7 +307,8 @@ class DataStore:
             result["diagnostics"]={**DEFAULT_SETTINGS["diagnostics"],**(raw.get("diagnostics") or {})}
             return result
     def save_users(self,value):
-        with self.lock:self._write(self.users_file,value)
+        from .access import normalize_user
+        with self.lock:self._write(self.users_file,[normalize_user(user) for user in value])
     def save_devices(self,value):
         with self.lock:
             devices,recorders=self.catalog_values(value)
@@ -297,7 +316,8 @@ class DataStore:
                               {"devices.json":devices,"recorders.json":recorders}.items()})
     save_cameras=save_devices
     def save_groups(self,value):
-        with self.lock:self._write(self.groups_file,value)
+        from .structure import normalize_spaces
+        with self.lock:self._write(self.groups_file,normalize_spaces(value,self.get_devices()))
     def save_settings(self,value):
         with self.lock:self._write(self.settings_file,value)
     def save_recorders(self,value):

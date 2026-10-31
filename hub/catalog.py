@@ -82,7 +82,7 @@ def onvif_channels(runtime,camera):
             encoder=profile.get("VideoEncoderConfiguration") or {};resolution=encoder.get("Resolution") or {}
             return (encoder.get("Encoding")=="H264",int(resolution.get("Width") or 0)*int(resolution.get("Height") or 0))
         channels=[]
-        for index,profiles in enumerate(sources.values()):
+        for index,(source_token,profiles) in enumerate(sources.items()):
             profiles=sorted(profiles,key=quality,reverse=True);main=profiles[0]
             sub=min((p for p in profiles if quality(p)[0]),key=quality,default=profiles[-1])
             def uri(profile):
@@ -93,7 +93,7 @@ def onvif_channels(runtime,camera):
             main_path,port,host=uri(main);sub_path,sub_port,sub_host=uri(sub)
             if sub_port!=port or sub_host!=host:sub_path=main_path
             channels.append({"channel":index,"name":text(main.get("Name") or "Канал "+str(index+1),"Канал ONVIF",150,True),
-                             "profile_token":text(main["token"],"Профиль ONVIF",256,True),"rtsp_path":main_path,"rtsp_sub_path":sub_path,"rtsp_port":port,"rtsp_host":host})
+                             "source_token":source_token,"profile_token":text(main["token"],"Профиль ONVIF",256,True),"rtsp_path":main_path,"rtsp_sub_path":sub_path,"rtsp_port":port,"rtsp_host":host})
         runtime.hardware.record("recorder.channels",camera,channel_count=len(channels),duration_ms=round((time.monotonic()-began)*1000))
         return channels
     except Exception as exc:
@@ -193,29 +193,7 @@ def register_catalog(app, runtime):
     @bp.post("/api/recorders")
     @admin_required
     def add_recorder():
-        data = body(); camera = draft(data); chosen = ids(data.get("group_ids", []))
-        try: channels = recorder_channels(runtime, camera)
-        except Exception: return jsonify(error="Не удалось прочитать каналы регистратора; проверьте журнал оборудования"), 502
-        with runtime.store.lock:
-            groups = runtime.store.get_groups()
-            if set(chosen) - {g["id"] for g in groups}: raise ValueError("Выбрана несуществующая группа")
-            devices = runtime.store.get_devices(); created = []; skipped = []
-            def identity(c):return (DataStore.connection_key(c),c.get("channel",0) if c.get("protocol")=="dvrip" else c.get("profile_token") or c.get("rtsp_path",""))
-            existing = {identity(c) for c in devices}
-            for channel in channels:
-                source={**camera,**{key:value for key,value in channel.items() if key!="name"}}
-                if identity(source) in existing:
-                    skipped.append(channel["channel"]); continue
-                source.update(id="cam_"+uuid.uuid4().hex,name=(camera["name"]+" · "+channel["name"])[:150])
-                item=validate_device({key:value for key,value in source.items() if key!="password"},camera,runtime)
-                devices.append(item); created.append(item["id"])
-                for group in groups:
-                    if group["id"] in chosen: group["camera_ids"].append(item["id"])
-            if len(devices) > 4096: raise ValueError("Достигнут предел каталога: 4096 камер")
-            runtime.store.save_catalog(devices,groups,{DataStore.connection_key(camera):camera["name"]})
-            recorder = next(r for r in runtime.store.get_recorders() if r["connection_key"] == DataStore.connection_key(camera))
-        runtime.audit("recorder.added", {"id": recorder["id"], "channels_added": len(created), "channels_preserved": len(skipped)})
-        return jsonify(success=True, recorder_id=recorder["id"], created=created, skipped=skipped), 201
+        return jsonify(error="Добавление всех каналов без выбора отключено. Получите список через /api/inventory/probe и сохраните выбранные каналы через /api/inventory."),410
 
     @bp.patch("/api/cameras/<cam_id>")
     def rename_camera(cam_id):
@@ -243,72 +221,26 @@ def register_catalog(app, runtime):
     @admin_required
     def export_cameras():
         include = request.args.get("include_passwords") == "1"
+        if include:raise ValueError("Для переноса учётных данных используйте защищённый экспорт в разделе «Устройства»")
+        from .transfers import safe_path
         cameras = []
         for camera in runtime.store.get_devices():
             item = public_device(camera)
+            for key in ("rtsp_path","rtsp_sub_path"):
+                if key in item:item[key]=safe_path(item[key])
             item["group_ids"] = [g["id"] for g in runtime.store.get_groups() if camera["id"] in g.get("camera_ids", [])]
             if include: item["password"] = runtime.dec_pwd(camera.get("password", ""))
             cameras.append(item)
         result = {"format": "vwshub.cameras", "version": 1, "includes_passwords": include, "cameras": cameras,
                   "groups": [{"id": g["id"], "name": g["name"]} for g in runtime.store.get_groups()],
-                  "recorders": runtime.store.get_recorders()}
+                  "recorders": [{k:r[k] for k in ("id","name","connection_key") if k in r} for r in runtime.store.get_recorders()]}
         runtime.audit("cameras.exported", {"count": len(cameras), "with_secrets": include})
         return send_file(io.BytesIO(json.dumps(result, ensure_ascii=False, indent=2).encode()), mimetype="application/json", as_attachment=True, download_name="vwshub-cameras.json")
 
     @bp.post("/api/cameras/import")
     @admin_required
     def import_cameras():
-        data = body(); incoming = data.get("cameras"); mode = data.get("mode", "add")
-        if data.get("format") != "vwshub.cameras" or data.get("version") != 1 or not isinstance(incoming, list) or len(incoming) > 4096 or not isinstance(mode, str) or mode not in {"add", "update"}:
-            raise ValueError("Неверный файл камер VWSHub")
-        if not isinstance(data.get("groups", []), list) or not isinstance(data.get("recorders", []), list) or len(data.get("groups",[]))>1000 or len(data.get("recorders",[]))>4096: raise ValueError("Неверный список групп или регистраторов")
-        names = {}
-        for recorder in data.get("recorders", []):
-            if not isinstance(recorder, dict): raise ValueError("Неверный регистратор импорта")
-            physical = text(recorder.get("connection_key"), "Ключ регистратора", 300, True)
-            names[physical] = text(recorder.get("name"), "Имя регистратора", 150, True)
-        with runtime.store.lock:
-            devices = runtime.store.get_devices(); groups = runtime.store.get_groups(); by_id = {c["id"]: c for c in devices}
-            known_groups = {g["id"]: g for g in groups}
-            for item in data.get("groups", []):
-                if not isinstance(item, dict): raise ValueError("Неверная группа импорта")
-                gid = ids([item.get("id")])[0]
-                if gid not in known_groups:
-                    group = {"id": gid, "name": text(item.get("name"), "Группа", 100, True), "camera_ids": []}
-                    groups.append(group); known_groups[gid] = group
-            validated = []; selected_ids = set(); source_ids=set(); skipped = 0
-            def signature(cam): return (DataStore.connection_key(cam), cam.get("channel", 0), cam.get("rtsp_path") or "", cam.get("profile_token") or "")
-            connections = {signature(c) for c in devices}
-            for raw in incoming:
-                if not isinstance(raw, dict): raise ValueError("Неверная камера импорта")
-                if raw.get("id") is not None:
-                    ids([raw["id"]])
-                    if raw["id"] in source_ids:raise ValueError("В импорте повторяются ID камер")
-                    source_ids.add(raw["id"])
-                current = by_id.get(raw.get("id")) if mode == "update" else None
-                source = dict(raw)
-                if not current and (not source.get("id") or source.get("id") in by_id or source.get("id") in selected_ids): source["id"] = "cam_" + uuid.uuid4().hex
-                item = validate_device(source, current, runtime)
-                if not current and signature(item) in connections: skipped += 1; continue
-                chosen = ids(raw.get("group_ids", []))
-                if set(chosen) - set(known_groups): raise ValueError("Камера ссылается на отсутствующую группу")
-                if item["id"] in selected_ids: raise ValueError("Повторяющийся ID камеры")
-                selected_ids.add(item["id"]); validated.append((item, current, chosen))
-            if len(devices) + sum(old is None for _, old, _ in validated) > 4096: raise ValueError("Каталог превышает 4096 камер")
-            if len(groups)>1000:raise ValueError("Каталог превышает 1000 групп")
-            for item, old, chosen in validated:
-                if old: devices[devices.index(old)] = item
-                else: devices.append(item)
-                for group in groups:
-                    group["camera_ids"] = [cid for cid in group["camera_ids"] if cid != item["id"]]
-                    if group["id"] in chosen: group["camera_ids"].append(item["id"])
-            runtime.store.save_catalog(devices,groups,names)
-        invalidate=app.extensions.get("vwshub_invalidate_camera")
-        if invalidate:
-            for item,old,_ in validated:
-                if old and connection_signature(item)!=connection_signature(old):invalidate(item["id"])
-        runtime.audit("cameras.imported", {"imported": len(validated), "skipped": skipped, "mode": mode})
-        return jsonify(success=True, imported=len(validated), skipped=skipped)
+        return jsonify(error="Прямой импорт отключён. Используйте /api/transfers/devices/preview и /api/transfers/devices/apply."),410
 
     @bp.get("/api/hardware/logs")
     @admin_required
