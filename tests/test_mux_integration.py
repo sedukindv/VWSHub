@@ -78,11 +78,12 @@ def mux_pipeline(monkeypatch, ffmpeg_binary, synthetic_clip):
         {'FilePath': '/synthetic/003/second.h264', 'BeginTime': MIDDLE, 'EndTime': END, 'Channel': 2},
     ]
     rt = SimpleNamespace(
-        store=SimpleNamespace(base_dir=folder),
-        current_user=lambda: {'role': 'viewer'},
+        store=SimpleNamespace(base_dir=folder,revision=0,get_users=lambda:[{'role':'viewer','username':'synthetic-viewer'}]),
+        current_user=lambda: {'role': 'viewer','username':'synthetic-viewer'},
         get_camera=lambda camera_id: camera if camera_id == camera['id'] else None,
         can_access_camera=lambda user, camera_id: camera_id == camera['id'],
         can_access_archive=lambda user: True,
+        can_export_archive=lambda user=None:True,
         enc_pwd=lambda password: password,
         dec_pwd=lambda password: 'synthetic-password',
         audit=Mock(),

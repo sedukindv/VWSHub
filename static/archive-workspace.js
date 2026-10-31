@@ -16,6 +16,10 @@
     Обновить: "Refresh",
     "Архив на весь экран": "Fullscreen archive",
     "Нет DVRIP-каналов": "No DVRIP channels",
+    "Нет доступных камер": "No accessible cameras",
+    "Архив не поддерживается": "Archive not supported",
+    "Для этого источника архивный доступ не реализован. Просмотр живого видео доступен в разделе «Просмотр».":
+      "Archive access is not implemented for this source. Live video is available in Live view.",
     "Начало периода": "Period start",
     "Конец периода": "Period end",
     "Измените период и нажмите «Обновить».":
@@ -198,6 +202,7 @@
   Object.assign(english, {
     Группа: "Group",
     "Все камеры": "All cameras",
+    "Пространство / зона": "Space / zone",
     "Поиск камеры": "Find camera",
     "Выберите камеру": "Choose a camera",
     "Ничего не найдено": "Nothing found",
@@ -241,35 +246,17 @@
           "'": "&#39;",
         })[c],
     );
-  const paths = {
-    archive:
-      '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9m-9 4h4"/>',
-    camera:
-      '<path d="M4 7h4l2-3h4l2 3h4a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/>',
-    play: '<path d="m8 5 11 7-11 7z"/>',
-    pause: '<path d="M8 5v14M16 5v14"/>',
-    prev: '<path d="m14 5-7 7 7 7M4 5v14"/>',
-    next: '<path d="m10 5 7 7-7 7M20 5v14"/>',
-    left: '<path d="m14 6-6 6 6 6"/>',
-    right: '<path d="m10 6 6 6-6 6"/>',
-    minus: '<path d="M5 12h14"/>',
-    plus: '<path d="M5 12h14M12 5v14"/>',
-    zoom: '<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6m-3-3v6"/>',
-    fit: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 12h8"/>',
-    expand: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
-    download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
-    close: '<path d="m6 6 12 12M6 18 18 6"/>',
-    refresh:
-      '<path d="M20 7v5h-5M4 17v-5h5M5 9a7 7 0 0 1 12-4l3 7M4 12l3 7a7 7 0 0 0 12-4"/>',
-    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
-    selection: '<path d="M8 4H4v16h4m8-16h4v16h-4M9 12h6"/>',
-    alert: '<path d="m12 3 10 18H2zM12 9v4m0 4h.01"/>',
-    skip: '<path d="m4 5 7 7-7 7M13 5l7 7-7 7"/>',
-    mic: '<path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
-    list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-  };
   const icon = (name) =>
-    `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.clock}</svg>`;
+    window.VWSIcons.html(
+      {
+        prev: "skip-back",
+        next: "skip-forward",
+        zoom: "zoom-in",
+        fit: "scan",
+        selection: "scan-line",
+        skip: "fast-forward",
+      }[name] || name,
+    );
   const btn = (id, name, label, extra = "") =>
     `<button type="button" id="${id}" class="icon-btn" title="${label}" aria-label="${label}" ${extra}>${icon(name)}</button>`;
   const clock = (ms) =>
@@ -303,13 +290,31 @@
     const { root, api, onSelect = () => {} } = options;
     const onError = (message) => options.onError?.(translate(String(message))),
       onSuccess = (message) => options.onSuccess?.(translate(String(message)));
-    const cameras = options.cameras.filter((c) => c.protocol === "dvrip");
-    const groups = (options.groups || []).filter((g) =>
-      cameras.some((c) => g.camera_ids.includes(c.id)),
-    );
+    const cameras = options.cameras.filter((c) => !c.is_hidden);
+    const archiveGroups = () =>
+      (options.groups || [])
+        .flatMap((space) => [
+          { id: space.id, name: space.name, camera_ids: space.camera_ids },
+          ...(space.zones || []).map((zone) => ({
+            id: space.id + "::" + zone.id,
+            name: space.name + " / " + zone.name,
+            camera_ids: (space.members || [])
+              .filter((m) => m.zone_id === zone.id)
+              .map((m) => m.channel_id),
+          })),
+        ])
+        .filter((group) =>
+          cameras.some((c) => group.camera_ids.includes(c.id)),
+        );
+    const groups = archiveGroups();
+    const canExport = () =>
+      options.user?.role === "admin" ||
+      options.user?.permissions?.archive_export === true;
     let cameraQuery = "";
 
     const valid = (id) => cameras.some((c) => String(c.id) === String(id));
+    const cameraLabel = (c) =>
+      `${c.name} · ${c.protocol === "dvrip" ? "CH " + (Number(c.channel || 0) + 1) : translate("Архив не поддерживается")}`;
     // Prefer the selected camera from the caller; if the caller has not persisted
     // a selection yet, preserve the last valid archive camera across remounts.
     const requested = valid(options.selectedId)
@@ -407,7 +412,7 @@
     };
     const dom =
       () => `<section class="archive-console" aria-label="Архив видеозаписей">
-      <div class="arc-toolbar"><div class="arc-title">${icon("archive")}<h1>Архив</h1></div><div class="arc-toolbar-main"><div class="arc-field arc-group-field"><label for="arc-group">Группа</label><select id="arc-group" class="select"><option value="">${translate("Все камеры")}</option>${groups.map((g) => `<option value="${escape(g.id)}" ${m.groupId === g.id ? "selected" : ""}>${escape(g.name)}</option>`).join("")}</select></div><div class="arc-field arc-camera-field"><label for="arc-camera">Камера / канал</label><div class="arc-camera-choice"><input type="search" id="arc-camera-search" class="field" placeholder="Поиск камеры" aria-label="Поиск камеры"><select id="arc-camera" class="select" ${!cameras.length ? "disabled" : ""}>${cameras.length ? cameras.map((c) => `<option value="${escape(String(c.id))}" ${String(c.id) === String(m.camId) ? "selected" : ""}>${escape(c.name)} · CH ${Number(c.channel || 0) + 1}</option>`).join("") : `<option>${translate("Нет DVRIP-каналов")}</option>`}</select></div></div><div class="arc-field"><label for="arc-date">Дата архива</label><div class="arc-date-navigation">${btn("arc-day-prev", "left", "Предыдущий день")}<input id="arc-date" type="date" class="field" value="${m.day}" aria-label="Дата архива">${btn("arc-day-next", "right", "Следующий день")}</div></div><button type="button" id="arc-period" class="btn btn-sm" aria-expanded="${m.custom}">${icon("clock")} Период</button></div><div class="arc-toolbar-actions"><button type="button" id="arc-search" class="btn" ${!cameras.length ? "disabled" : ""}>${icon("refresh")} Обновить</button>${btn("arc-fullscreen", "expand", "Архив на весь экран")}</div><div class="arc-custom-period" id="arc-custom-period" ${m.custom ? "" : "hidden"}><div class="arc-time-range"><div class="arc-field"><label for="arc-from">Начало периода</label><input class="field" type="datetime-local" step="1" id="arc-from" value="${m.draftStart}"></div><span class="arc-time-range-sep">—</span><div class="arc-field"><label for="arc-to">Конец периода</label><input class="field" type="datetime-local" step="1" id="arc-to" value="${m.draftEnd}"></div></div><span>Измените период и нажмите «Обновить».</span></div></div>
+      <div class="arc-toolbar"><div class="arc-title">${icon("archive")}<h1>Архив</h1></div><div class="arc-toolbar-main"><div class="arc-field arc-group-field"><label for="arc-group">Пространство / зона</label><select id="arc-group" class="select"><option value="">${translate("Все камеры")}</option>${groups.map((g) => `<option value="${escape(g.id)}" ${m.groupId === g.id ? "selected" : ""}>${escape(g.name)}</option>`).join("")}</select></div><div class="arc-field arc-camera-field"><label for="arc-camera">Камера / канал</label><div class="arc-camera-choice"><input type="search" id="arc-camera-search" class="field" placeholder="Поиск камеры" aria-label="Поиск камеры"><select id="arc-camera" class="select" ${!cameras.length ? "disabled" : ""}>${cameras.length ? cameras.map((c) => `<option value="${escape(String(c.id))}" ${String(c.id) === String(m.camId) ? "selected" : ""}>${escape(cameraLabel(c))}</option>`).join("") : `<option>${translate("Нет доступных камер")}</option>`}</select></div></div><div class="arc-field"><label for="arc-date">Дата архива</label><div class="arc-date-navigation">${btn("arc-day-prev", "left", "Предыдущий день")}<input id="arc-date" type="date" class="field" value="${m.day}" aria-label="Дата архива">${btn("arc-day-next", "right", "Следующий день")}</div></div><button type="button" id="arc-period" class="btn btn-sm" aria-expanded="${m.custom}">${icon("clock")} Период</button></div><div class="arc-toolbar-actions"><button type="button" id="arc-search" class="btn" ${!cameras.length ? "disabled" : ""}>${icon("refresh")} Обновить</button>${btn("arc-fullscreen", "expand", "Архив на весь экран")}</div><div class="arc-custom-period" id="arc-custom-period" ${m.custom ? "" : "hidden"}><div class="arc-time-range"><div class="arc-field"><label for="arc-from">Начало периода</label><input class="field" type="datetime-local" step="1" id="arc-from" value="${m.draftStart}"></div><span class="arc-time-range-sep">—</span><div class="arc-field"><label for="arc-to">Конец периода</label><input class="field" type="datetime-local" step="1" id="arc-to" value="${m.draftEnd}"></div></div><span>Измените период и нажмите «Обновить».</span></div></div>
       <div class="arc-body"><div class="arc-viewer" id="arc-viewer" tabindex="0" aria-label="Видео архива. Колесо — увеличение, двойной щелчок — увеличить или сбросить, пробел — пауза."><div class="arc-video-layer" id="arc-video-layer"><video id="arc-video" playsinline preload="auto" disableRemotePlayback></video><canvas id="arc-last-frame" class="arc-last-frame" hidden aria-hidden="true"></canvas><audio id="arc-audio" preload="none"></audio></div><div class="arc-hud"><div><b id="arc-camera-title">${escape(camera()?.name || translate("Камера не выбрана"))}</b><small id="arc-video-time">Видеозапись регистратора</small></div><span class="arc-camera-chip">${icon("archive")} АРХИВ</span></div><div class="arc-state" id="arc-state" role="status" aria-live="polite"></div><span class="arc-zoom-indicator" id="arc-zoom-indicator" hidden></span><div class="arc-player-controls" id="arc-player-controls" aria-label="Управление воспроизведением"><div class="arc-controls-start">${btn("arc-player-prev", "prev", "Предыдущая запись")}<button type="button" id="arc-play" class="arc-primary-play" aria-label="Воспроизвести">${icon("play")}</button>${btn("arc-player-next", "next", "Следующая запись")}<span class="arc-timecode" id="arc-timecode">—</span><select id="arc-speed" aria-label="Скорость воспроизведения">${[0.25, 0.5, 1, 1.5, 2, 4].map((n) => `<option value="${n}" ${m.speed === n ? "selected" : ""}>${locale === "en-GB" ? String(n) : String(n).replace(".", ",")}×</option>`).join("")}</select></div><div class="arc-controls-end">${btn("arc-zoom-out", "minus", "Уменьшить изображение")}<span id="arc-zoom-value" class="arc-zoom-value">1×</span>${btn("arc-zoom-in", "plus", "Увеличить изображение")}${btn("arc-zoom-reset", "fit", "Сбросить увеличение")}${btn("arc-snapshot", "camera", "Сохранить снимок")}${btn("arc-audio-toggle", "mic", "Звук архива: проверка микрофона", 'disabled aria-pressed="false"')}${btn("arc-player-fullscreen", "expand", "Архив на весь экран")}</div></div></div></div>
       <section class="arc-timeline-section" aria-label="Шкала архива и экспорт"><div class="arc-transport"><div><span class="arc-section-label">${icon("clock")}<span id="arc-range-label">Шкала времени</span></span><span class="arc-current-time" id="arc-current-time">—</span></div><div>${btn("arc-record-prev", "prev", "Предыдущая запись на шкале")}${btn("arc-record-next", "next", "Следующая запись на шкале")}<button type="button" class="btn btn-sm" id="arc-skip-gaps" aria-pressed="${m.skipGaps}" title="При завершении записи перейти к следующей, минуя промежуток">${icon("skip")}<span>Пропускать паузы</span></button><select id="arc-timeline-style" class="select select-sm" aria-label="Вид шкалы времени"><option value="records">Интервалы</option><option value="continuous">Слайдер</option></select>${btn("arc-time-back", "left", "Сдвинуть шкалу назад")}${btn("arc-time-out", "minus", "Уменьшить масштаб шкалы")}<button type="button" class="btn btn-sm" id="arc-time-fit" title="Показать весь период">Весь период</button>${btn("arc-time-in", "plus", "Увеличить масштаб шкалы")}${btn("arc-time-forward", "right", "Сдвинуть шкалу вперёд")}</div></div>
       <p class="arc-speed-warning" id="arc-speed-warning" role="status" hidden>На повышенной скорости изображение может задерживаться: скорость чтения ограничена диском регистратора и сетью.</p><div class="arc-timeline-window"><div class="arc-ruler" id="arc-ruler"></div><div class="arc-track" id="arc-track" role="group" tabindex="0" aria-label="Шкала времени архива. Стрелки — переход, протягивание — выделение."><span class="arc-track-label" id="arc-track-label"></span><div class="arc-recordings" id="arc-recordings"></div><div class="arc-selection" id="arc-selection" hidden><button class="arc-handle start" data-handle="start" role="slider" aria-label="Начало выделения. Стрелки — изменить на секунду."></button><button class="arc-handle end" data-handle="end" role="slider" aria-label="Конец выделения. Стрелки — изменить на секунду."></button></div><div class="arc-playhead" id="arc-playhead" role="slider" tabindex="0" aria-label="Позиция воспроизведения" aria-valuemin="0" aria-valuemax="100" hidden></div></div></div><div class="arc-timeline-hint"><p id="arc-timeline-hint">Щелчок — просмотр · протяните — фрагмент · колесо — масштаб</p><div class="arc-legend"><span><i></i>Запись</span><span><i class="selection"></i>Фрагмент</span><span><i class="cursor"></i>Позиция</span></div></div>
@@ -482,6 +487,11 @@
       const display = $("#arc-state");
       const states = {
         idle: ["archive", "Архив готов к просмотру", "Выберите дату и камеру."],
+        unsupported: [
+          "archive",
+          "Архив не поддерживается",
+          "Для этого источника архивный доступ не реализован. Просмотр живого видео доступен в разделе «Просмотр».",
+        ],
         searching: ["spin", "Поиск записей", "Запрашиваем архив регистратора…"],
         ready: [
           "play",
@@ -532,13 +542,15 @@
       $("#arc-status-text").textContent =
         next === "searching"
           ? "Поиск записей…"
-          : next === "error"
-            ? "Ошибка: " + message
-            : next === "loading"
-              ? "Загрузка записи…"
-              : m.loaded
-                ? `${m.intervals.length} отрезков · ${duration(m.intervals.reduce((sum, r) => sum + r.end - r.start, 0))} записи`
-                : "Готово к поиску";
+          : next === "unsupported"
+            ? "Архив не поддерживается"
+            : next === "error"
+              ? "Ошибка: " + message
+              : next === "loading"
+                ? "Загрузка записи…"
+                : m.loaded
+                  ? `${m.intervals.length} отрезков · ${duration(m.intervals.reduce((sum, r) => sum + r.end - r.start, 0))} записи`
+                  : "Готово к поиску";
     }
     function updateCursor(follow = false) {
       const cursor = m.cursor,
@@ -623,7 +635,9 @@
       if (preciseDirty)
         $("#arc-selection-coverage").textContent =
           "Примените новые границы фрагмента.";
+      $("#arc-export").hidden = !canExport();
       $("#arc-export").disabled =
+        !canExport() ||
         !selected ||
         covered <= 0 ||
         !m.loaded ||
@@ -877,6 +891,11 @@
         onSelect(activeCamId);
         m.cursor = null;
       }
+      if (camera()?.protocol !== "dvrip") {
+        invalidate();
+        setState("unsupported");
+        return;
+      }
       const draft = m.custom
         ? {
             start: C.time($("#arc-from").value),
@@ -1076,6 +1095,7 @@
       sound.play().catch(audioFailure);
     }
     async function loadAudioCapabilities() {
+      if (camera()?.protocol !== "dvrip") return;
       audioSupported = false;
       audioEnabled = false;
       stopAudio();
@@ -1126,6 +1146,7 @@
     }
     function exportSelection() {
       if (
+        !canExport() ||
         !m.selection ||
         !m.loaded ||
         preciseDirty ||
@@ -1220,7 +1241,7 @@
         filtered
           .map(
             (c) =>
-              `<option value="${escape(c.id)}" ${String(c.id) === String(m.camId) ? "selected" : ""}>${escape(c.name)} · CH ${Number(c.channel || 0) + 1}</option>`,
+              `<option value="${escape(c.id)}" ${String(c.id) === String(m.camId) ? "selected" : ""}>${escape(cameraLabel(c))}</option>`,
           )
           .join("");
       select.disabled = !filtered.length;
@@ -1810,9 +1831,45 @@
         ],
       });
     }
+    on(window, "vwshub:catalog", () => {
+      if (disposed) return;
+      const previous = m.camId;
+      cameras.splice(
+        0,
+        cameras.length,
+        ...options.cameras.filter((c) => !c.is_hidden),
+      );
+      groups.splice(0, groups.length, ...archiveGroups());
+      if (!groups.some((g) => g.id === m.groupId)) m.groupId = "";
+      $("#arc-group").innerHTML =
+        `<option value="">${translate("Все камеры")}</option>${groups.map((g) => `<option value="${escape(g.id)}" ${m.groupId === g.id ? "selected" : ""}>${escape(g.name)}</option>`).join("")}`;
+      if (previous && !valid(previous)) {
+        m.camId = "";
+        onSelect("");
+        m.cursor = null;
+        invalidate();
+        $("#arc-camera-title").textContent = translate("Камера не выбрана");
+        $(".arc-status > span:last-child").textContent = "—";
+        onError(
+          locale === "en-GB"
+            ? "This camera is no longer available"
+            : "Камера больше не доступна для просмотра",
+        );
+      } else if (camera()) $("#arc-camera-title").textContent = camera().name;
+      cameraOptions();
+      updateSelection();
+      if (camera() && camera().protocol !== "dvrip") {
+        invalidate();
+        setState("unsupported");
+      }
+      $("#arc-search").disabled = !cameras.length;
+    });
     if (cameras.length) {
       loadAudioCapabilities();
-      if (!m.loaded) search();
+      if (camera()?.protocol !== "dvrip") {
+        invalidate();
+        setState("unsupported");
+      } else if (!m.loaded) search();
     }
     function dispose() {
       if (disposed) return;

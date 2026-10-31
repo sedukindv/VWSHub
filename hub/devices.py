@@ -99,6 +99,9 @@ def register_devices(app, runtime):
             if not isinstance(data, dict):
                 return jsonify(error="Ожидается JSON-объект"), 400
             cam = get_camera(str(data.get("cam_id") or ""))
+            if not cam and hasattr(runtime,"store"):
+                parent=next((d for d in runtime.store.get_recorders() if d["id"]==str(data.get("cam_id") or "")),None)
+                if parent:cam={**parent.get("connection",{}),"id":parent["id"],"recorder_id":parent["id"],"name":parent["name"],"channel":0}
             if not cam:
                 return jsonify(error="Устройство не найдено"), 404
             began = time.monotonic()

@@ -54,8 +54,8 @@ def app_media():
     folder.mkdir(parents=True)
     cameras={f'ch{n+1}':{'id':f'ch{n+1}','name':f'Camera {n+1}','protocol':'dvrip','ip':'192.0.2.10','port':34567,'channel':n,'username':'operator','password':'encrypted'} for n in range(3)}
     state={'logged':True,'archive':True,'visible':set(cameras)}
-    rt=SimpleNamespace(store=SimpleNamespace(base_dir=folder),current_user=lambda:{'role':'viewer'} if state['logged'] else None,
-        get_camera=lambda id:cameras.get(id),can_access_camera=lambda user,id:id in state['visible'],can_access_archive=lambda user:state['archive'],
+    rt=SimpleNamespace(store=SimpleNamespace(base_dir=folder,revision=0,get_users=lambda:[rt.current_user()] if rt.current_user() else []),current_user=lambda:{'role':'viewer','username':'operator'} if state['logged'] else None,
+        get_camera=lambda id:cameras.get(id),can_access_camera=lambda user,id:id in state['visible'],can_access_archive=lambda user:state['archive'],can_export_archive=lambda user=None:state.get('export',True),
         enc_pwd=lambda p:p,dec_pwd=lambda p:'test-password',audit=Mock(),settings=lambda:{'resources':{'max_live_streams':2,'max_archive_streams':2,'archive_buffer_mb':1,'archive_idle_seconds':30}})
     app=Flask(__name__);app.secret_key='test-only';app.config['TESTING']=True;app.extensions['vwshub']=rt
     service=media.register_media(app,rt)
@@ -276,3 +276,36 @@ def test_paused_client_resumes_with_all_final_fragments(app_media,monkeypatch):
             assert response.get_data()==payload
         finally:response.close()
     assert service.active_archives==0
+
+
+def test_archive_generator_stops_before_next_chunk_after_scope_revocation(app_media,monkeypatch):
+    app,service,state,cams=app_media
+    class Proc:
+        def __init__(self):self.stdin=io.BytesIO();self.stdout=io.BytesIO(b'fragment'*10000);self.stderr=io.BytesIO();self.code=None
+        def poll(self):return self.code
+        def wait(self,timeout=None):self.code=0;return 0
+        def terminate(self):self.code=-15
+        def kill(self):self.code=-9
+    cam=Mock();cam.login.return_value=True
+    monkeypatch.setattr(media,'DVRIPCam',Mock(return_value=cam));monkeypatch.setattr(media.shutil,'which',lambda _:'test-ffmpeg');monkeypatch.setattr(media.subprocess,'Popen',lambda *a,**k:Proc())
+    monkeypatch.setattr(media,'dvrip_playback_chunks',lambda *a,**k:iter([video_frame()]))
+    with app.test_request_context():
+        response=media.create_archive_response(cams['ch2'],[item('/same-channel.h264')],'2026-10-29 12:00:00','2026-10-29 12:10:00')
+        iterator=iter(response.response)
+        try:
+            assert next(iterator)
+            state['visible'].remove('ch2');service.runtime.store.revision+=1
+            assert list(iterator)==[]
+        finally:response.close()
+    assert service.active_archives==0
+    cam.close.assert_called_once()
+
+
+def test_snapshot_rechecks_scope_after_slow_device_response(app_media,monkeypatch):
+    app,_,state,_=app_media
+    monkeypatch.setattr(media.shutil,'which',lambda _:'test-ffmpeg')
+    def capture(*args,**kwargs):
+        state['visible'].clear()
+        return SimpleNamespace(returncode=0,stdout=b'synthetic-frame')
+    monkeypatch.setattr(media.subprocess,'run',capture)
+    assert app.test_client().get('/api/cameras/ch1/snapshot').status_code==403

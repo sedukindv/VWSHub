@@ -192,14 +192,13 @@ def test_device_edit_invalidates_old_live_worker_and_archive_metadata(app,owner,
     assert media.files=={("cam_b","keep"):"cached"} and media.audio_cache=={"cam_b":"keep"}
     cancel.assert_called_once();keep.assert_not_called()
 
-def test_groups_import_all_or_nothing(owner,catalog):
+def test_legacy_group_import_requires_preview(owner,catalog):
     old=catalog.store.get_groups()
-    response=owner.post("/api/groups/import",json={"format":"vwshub.groups","version":1,"groups":[{"id":"good","name":"Good","camera_ids":["cam_a"]},{"id":"bad","name":"Bad","camera_ids":["missing"]}]})
-    assert response.status_code==400 and catalog.store.get_groups()==old
     response=owner.post("/api/groups/import",json={"groups":[{"id":"good","name":"Good","camera_ids":["cam_a"]}]})
-    assert response.status_code==200
+    assert response.status_code==410 and catalog.store.get_groups()==old
     exported=json.loads(owner.get("/api/groups/export").data)
     assert exported["format"]=="vwshub.groups" and exported["version"]==1
+
 
 def test_group_delete_revokes_viewer_catalog(app,owner,catalog):
     read_only=viewer(app,owner,["group_a"],True)
@@ -217,7 +216,7 @@ def test_settings_validate_resources_and_formats(owner):
     response=owner.post("/api/settings",json={"resources":{"profile":"maximum"},"timezone":"UTC","snapshot_format":"png"})
     assert response.status_code==200
     settings=response.get_json()["settings"]
-    assert settings["resources"]["max_live_streams"]==64 and settings["timezone"]=="UTC" and settings["version"]=="0.8"
+    assert settings["resources"]["max_live_streams"]==64 and settings["timezone"]=="UTC" and settings["version"]=="0.8.5"
 
 def test_branding_applies_publicly_but_svg_is_rejected(app,owner):
     assert owner.post("/api/branding",json={"name":"My Hub","accent":"#123abc","motion":False}).status_code==200
@@ -264,3 +263,44 @@ def test_origin_and_audit_redaction(owner,catalog):
 def test_server_restart_unavailable_without_supervisor(owner):
     assert owner.post("/api/server/restart",json={"confirm":True}).status_code==501
     assert owner.post("/api/server/restart",json={}).status_code==400
+
+def test_branding_library_icons_are_names_not_svg_and_survive_backup(app,owner):
+    payload={"logo_icon":"warehouse","favicon_icon":"camera","accent":"#279b85","icon_color":"#8c6fc5"}
+    response=owner.post("/api/branding",json=payload)
+    assert response.status_code==200
+    for key,value in payload.items():assert response.get_json()["branding"][key]==value
+    for bad in ('<svg onload="alert(1)">','https://example.test/icon.svg',None,12):
+        assert owner.post("/api/branding",json={"logo_icon":bad}).status_code==400
+    from hub.backup import validate_backup
+    files,_=validate_backup(owner.get("/api/backup").data)
+    restored=json.loads(files["settings.json"])
+    assert all(restored["branding"][key]==value for key,value in payload.items())
+    login=app.test_client().get("/login").get_data(as_text=True)
+    assert 'data-icon="warehouse"' in login
+    assert 'data-favicon-icon="camera"' in login
+    assert owner.post("/api/branding",json={"logo_icon":"","favicon_icon":""}).status_code==200
+
+def test_uploaded_logo_and_favicon_survive_restart_and_backup(app,owner,isolated_path):
+    import base64,struct,zlib
+    def image(color):
+        def chunk(kind,data):
+            return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+        raw=bytes([137,80,78,71,13,10,26,10])+chunk(b"IHDR",struct.pack(">IIBBBBB",1,1,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(bytes([0,*color])))+chunk(b"IEND",b"")
+        return "data:image/png;base64,"+base64.b64encode(raw).decode()
+    assets={"logo":image((147,96,207)),"favicon":image((19,160,138)),"logo_icon":"","favicon_icon":""}
+    assert owner.post("/api/branding",json=assets).status_code==200
+    restarted=create_app(isolated_path/"data",{"TESTING":True,"REGISTER_EXTENSIONS":False,"CSRF_ENABLED":False,"LEGACY_DATA_DIR":isolated_path/"legacy"})
+    assert all(restarted.test_client().get("/api/branding").json[key]==value for key,value in assets.items())
+    login=restarted.test_client().get("/login").get_data(as_text=True)
+    assert assets["logo"] in login and assets["favicon"] in login
+    from hub.backup import validate_backup
+    files,_=validate_backup(owner.get("/api/backup").data)
+    brand=json.loads(files["settings.json"])["branding"]
+    assert all(brand[key]==value for key,value in assets.items())
+
+
+def test_legacy_space_creation_flag_is_accepted_and_normalized(owner):
+    result=owner.post("/api/users",json={"username":"legacy_editor","password":"operator-test-password","permissions":{"create_spaces":True}})
+    assert result.status_code==201
+    assert result.json["user"]["permissions"]["edit_spaces"] is True
+    assert "create_spaces" not in result.json["user"]["permissions"]

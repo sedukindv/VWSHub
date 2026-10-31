@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from flask import Blueprint, Response, current_app, jsonify, request, send_from_directory, session, stream_with_context
+from .access import features
 from werkzeug.utils import secure_filename
 try:
     from dvrip import DVRIPCam
@@ -588,6 +589,7 @@ class MediaService:
         self.audio_cache={}
         self.operations={}
         self.cancelled={}
+        self.reconcile_lock=threading.Lock()
         self.live=LiveManager(Path(app.config.get('LIVE_ROOT',rt.store.base_dir/'live')))
         threading.Thread(target=self.live.reap,name='vwshub-live-reaper',daemon=True).start()
         atexit.register(self.stop_all)
@@ -599,6 +601,36 @@ class MediaService:
 
     def stats(self):
         with self.lock:return {'live_streams':len(self.live.streams),'archive_streams':self.active_archives}
+
+    def reconcile_permissions(self):
+        """Drop revoked consumers while retaining streams used by other accounts."""
+        with self.reconcile_lock:
+            with self.live.lock:
+                leases=[(key,list(item.get('leases',{}))) for key,item in self.live.streams.items()]
+            with self.lock:operations=list(self.operations.values())
+            users={u['username']:u for u in self.runtime.store.get_users()}
+            epoch=self.runtime.settings().get('auth_epoch')
+            removals=[];cancellations=[]
+            for key,owners in leases:
+                for owner in owners:
+                    user=users.get(owner.rpartition(':')[0])
+                    allowed=bool(user and user.get('active') is not False and features(user)['live'] and self.runtime.can_access_camera(user,key[0]))
+                    if not allowed:removals.append((key,owner))
+            for operation in operations:
+                user=users.get(operation.get('username'))
+                allowed=bool(user and user.get('active') is not False and self.runtime.can_access_camera(user,operation['camera']) and
+                             self.runtime.can_access_archive(user) and (not operation.get('attachment') or self.runtime.can_export_archive(user)) and
+                             operation.get('auth_epoch')==epoch)
+                if not allowed:cancellations.append(operation)
+            # No catalog reads occur while holding a live/process lock.
+            with self.live.lock:
+                for key,owner in removals:
+                    item=self.live.streams.get(key)
+                    if item:item.get('leases',{}).pop(owner,None)
+                for key,_ in leases:
+                    item=self.live.streams.get(key)
+                    if item and not item.get('leases'):self.live._stop_locked(key)
+            for operation in cancellations:operation['cancel']()
 
     def reserve(self, limit):
         with self.lock:
@@ -704,6 +736,19 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     ffmpeg=shutil.which('ffmpeg')
     if not ffmpeg:return jsonify(error='FFmpeg не установлен'),503
     service=current_app.extensions['vwshub_media'];limits=resources()
+    policy_user=service.runtime.current_user()
+    policy_name=policy_user.get('username') if policy_user else None
+    policy_epoch=service.runtime.settings().get('auth_epoch')
+    policy_revision=[-1,False]
+    def policy_allowed():
+        store=service.runtime.store
+        if policy_revision[0]!=store.revision:
+            user=next((u for u in store.get_users() if u.get('username')==policy_name),None)
+            allowed=bool(user and user.get('active') is not False and service.runtime.can_access_camera(user,cam_info['id'])
+                         and service.runtime.can_access_archive(user) and (not as_attachment or service.runtime.can_export_archive(user))
+                         and service.runtime.settings().get('auth_epoch')==policy_epoch)
+            policy_revision[:]=[store.revision,allowed]
+        return policy_revision[1]
     plain_camera=dict(cam_info);plain_camera['password']=dec_pwd(cam_info.get('password',''))
     play_id=request.args.get('play_id','')
     owner=session.get('archive_consumer')
@@ -866,7 +911,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
         with service.lock:
             if operation_key in service.cancelled or operation_key in service.operations:
                 cleanup();return jsonify(error='Запрос архива отменён или уже запущен'),409
-            service.operations[operation_key]={'camera':str(cam_info['id']),'cancel':cleanup}
+            service.operations[operation_key]={'camera':str(cam_info['id']),'cancel':cleanup,'username':policy_name,'attachment':as_attachment,'auth_epoch':policy_epoch}
     worker_thread=threading.Thread(target=worker,daemon=True,name='archive-transfer');state['worker']=worker_thread;worker_thread.start()
     try:first=chunks.get(timeout=min(90,idle))
     except queue.Empty:cleanup();return jsonify(error='Регистратор долго не отвечает. Повторите запрос или уменьшите период.'),504
@@ -874,6 +919,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
         message=state['error'] or 'В записи нет поддерживаемого медиа';cleanup();return jsonify(error=message),502
     def generate():
         try:
+            if not policy_allowed():return
             yield first
             last=time.monotonic()
             while not cancelled.is_set():
@@ -881,7 +927,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                 except queue.Empty:
                     if not worker_thread.is_alive() or time.monotonic()-last>idle:break
                     continue
-                if part is None:break
+                if part is None or not policy_allowed():break
                 last=time.monotonic();yield part
         finally:cleanup()
     headers={'Cache-Control':'no-store','X-Accel-Buffering':'no','Accept-Ranges':'none','X-VWSHub-Archive-Camera':str(cam_info['id']),'X-VWSHub-Archive-Channel':str(cam_info.get('channel',0))}
@@ -904,8 +950,11 @@ def register_media(app, rt):
         if not user:return None,(jsonify(error='Требуется авторизация'),401)
         cam=rt.get_camera(str(cam_id or ''))
         if not cam:return None,(jsonify(error='Камера не найдена'),404)
+        if request.endpoint=='media.stop_live':return cam,None
         if not rt.can_access_camera(user,str(cam['id'])):return None,(jsonify(error='Камера не предоставлена пользователю'),403)
         if archive and not rt.can_access_archive(user):return None,(jsonify(error='Доступ к архиву запрещён'),403)
+        if not archive and request.endpoint not in {'media.stop_live'} and not features(user)['live']:
+            return None,(jsonify(error='Просмотр Live запрещён'),403)
         if archive and cam.get('protocol','dvrip')!='dvrip':return None,(jsonify(error='Архив XMEye доступен для DVRIP-каналов'),400)
         if archive and not session.get('archive_consumer'):session['archive_consumer']=uuid.uuid4().hex
         return cam,None
@@ -918,7 +967,7 @@ def register_media(app, rt):
             if not isinstance(value,str) or not re.fullmatch(r'[a-f0-9]{32}',value):raise ValueError('Неверный идентификатор видеостены')
             return rt.current_user()['username']+':'+value
         if 'live_consumer' not in session:session['live_consumer']=uuid.uuid4().hex
-        return session['live_consumer']
+        return rt.current_user()['username']+':'+session['live_consumer']
     @bp.post('/api/live/stop')
     def stop_live():
         body=request.get_json(silent=True) or {};cam,err=authorized(body.get('cam_id'))
@@ -971,6 +1020,7 @@ def register_media(app, rt):
     def archive_response(attachment=False,audio=False):
         cam,err=authorized(request.args.get('cam_id'),True)
         if err:return err
+        if attachment and not rt.can_export_archive():return jsonify(error='Скачивание архива не разрешено администратором'),403
         try:
             start,end=range_args();path=(request.args.get('path') or '').strip()
             if len(path)>2048 or '\x00' in path:raise ValueError('Некорректный путь записи')
@@ -1016,6 +1066,10 @@ def register_media(app, rt):
         try:
             result=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-rtsp_transport','tcp','-i',build_rtsp_live_url(cam,'main'),'-frames:v','1','-an','-c:v',codec,'-f','image2pipe','pipe:1'],capture_output=True,timeout=15)
             if result.returncode or not result.stdout:return jsonify(error='Не удалось получить снимок камеры'),502
+            current=rt.current_user()
+            persisted=next((u for u in rt.store.get_users() if u.get('username')==(current or {}).get('username')),None)
+            if not persisted or persisted.get('active') is False or not features(persisted)['live'] or not rt.can_access_camera(persisted,cam_id):
+                return jsonify(error='Доступ к камере отозван'),403
             return Response(result.stdout,mimetype=mime,headers={'Cache-Control':'no-store','Content-Disposition':f'attachment; filename="camera_{cam_id}_{int(time.time())}.{extension}"'})
         except subprocess.TimeoutExpired:return jsonify(error='Камера не ответила на запрос снимка'),504
     @bp.post('/api/cameras/test')

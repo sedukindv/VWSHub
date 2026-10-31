@@ -25,11 +25,18 @@
         timers = new Set(),
         ptzCleanup = null,
         sequence = null;
-      const make = (id, stream = "sub") => ({
-        uid: ++uid,
-        camera_id: id,
-        stream,
-      });
+      const make = (id, stream = "sub") => {
+        const source = cameras.find((c) => c.id === id);
+        return {
+          uid: ++uid,
+          camera_id: id,
+          stream,
+          visibility_revision: Number(source?.visibility_revision || 0),
+          ...(source?.origin_id
+            ? { origin_id: source.origin_id, source_id: source.import_id || id }
+            : {}),
+        };
+      };
       if (!saved || saved.owner !== user.username) {
         saved = {
           owner: user.username,
@@ -38,6 +45,10 @@
           cells: cameras.map((c) => ({
             camera_id: c.id,
             stream: cameras.length === 1 ? "main" : "sub",
+            visibility_revision: c.visibility_revision || 0,
+            ...(c.origin_id
+              ? { origin_id: c.origin_id, source_id: c.import_id || c.id }
+              : {}),
           })),
           page: 0,
           tree: true,
@@ -54,6 +65,7 @@
         } catch (_) {}
       }
       const m = saved;
+      m.treeMode ||= "spaces";
       m.layout ||= String(m.columns ** 2);
       const capacity = () => model.layout(m.layout).count;
       const useLayout = (id) => {
@@ -63,22 +75,33 @@
       const treeOpen = new Map();
       let treeScroll = 0;
       const boundEvents = new WeakMap();
-      m.cells = m.cells.map((c) =>
-        c && cameras.some((x) => x.id === c.camera_id)
-          ? make(c.camera_id, c.stream)
-          : null,
-      );
-      if (options.groupId) {
+      m.cells = model
+        .reconcile(m.cells, cameras)
+        .map((c) => (c ? make(c.camera_id, c.stream) : null));
+      if (options.cameraId && cameras.some((c) => c.id === options.cameraId)) {
+        m.cells = [make(options.cameraId, "main")];
+        useLayout("1");
+        m.page = 0;
+        m.group = "";
+        m.title = cameras.find((c) => c.id === options.cameraId).name;
+      } else if (options.groupId) {
         m.group = options.groupId;
-        m.cells = cameras
-          .filter((c) =>
-            groups
-              .find((g) => g.id === options.groupId)
-              ?.camera_ids.includes(c.id),
-          )
+        const selection = options.zoneId
+          ? { kind: "zone", id: options.zoneId, space_id: options.groupId }
+          : {
+              kind: "space",
+              id: options.groupId,
+              root_only: !!options.rootOnly,
+            };
+        m.cells = model
+          .collection(cameras, groups, selection)
           .map((c) => make(c.id));
         useLayout(model.fit(m.cells.length));
         m.page = 0;
+        const group = groups.find((g) => g.id === options.groupId);
+        m.title = options.zoneId
+          ? group?.zones?.find((z) => z.id === options.zoneId)?.name
+          : group?.name;
       }
       let selected = null,
         focusRestore = null,
@@ -135,6 +158,23 @@
         }
         players.clear();
       }
+      function layoutIcon(shape) {
+        if (shape.count > 16)
+          return `<span class="wall-layout-numeric">${icon("layout-grid")}<span>${shape.count}</span></span>`;
+        const step = 24 / shape.columns,
+          gap = 1.4,
+          cells = [];
+        for (let y = 0; y < shape.rows; y++)
+          for (let x = 0; x < shape.columns; x++) {
+            if (shape.large && x < shape.large && y < shape.large && (x || y))
+              continue;
+            const size = shape.large && x === 0 && y === 0 ? shape.large : 1;
+            cells.push(
+              `<rect x="${x * step + gap / 2}" y="${y * step + gap / 2}" width="${step * size - gap}" height="${step * size - gap}" rx="0.7"/>`,
+            );
+          }
+        return `<svg class="wall-layout-diagram" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true">${cells.join("")}</svg>`;
+      }
       function tile(cell, index) {
         if (!cell)
           return `<button type="button" class="wall-empty" data-empty="${index}"><span>${String(index + m.page * capacity() + 1).padStart(2, "0")}</span>${icon("plus")}<small>${stateText("Выберите камеру", "Choose camera")}</small></button>`;
@@ -157,58 +197,162 @@
         if (!list) return;
         treeScroll = list.scrollTop;
         list
-          .querySelectorAll("details[data-recorder]")
-          .forEach((el) => treeOpen.set(el.dataset.recorder, el.open));
+          .querySelectorAll("details[data-node]")
+          .forEach((el) => treeOpen.set(el.dataset.node, el.open));
       }
       function treeHTML() {
-        const group = groups.find((g) => g.id === m.group),
-          hosts = new Map();
-        for (const c of cameras) {
-          if (group && !group.camera_ids.includes(c.id)) continue;
-          if (
-            !`${c.name} ${c.ip} ${c.recorder_name || ""}`
-              .toLowerCase()
-              .includes(treeQuery.toLowerCase())
-          )
-            continue;
-          const key = deviceKey(c);
-          if (!hosts.has(key)) hosts.set(key, []);
-          hosts.get(key).push(c);
+        const query = treeQuery.toLocaleLowerCase().trim();
+        const match = (c) =>
+          `${c.name} ${c.ip} ${c.recorder_name || ""}`
+            .toLocaleLowerCase()
+            .includes(query);
+        const leaf = (c) =>
+          `<button type="button" class="wall-tree-camera" draggable="true" data-camera="${h(c.id)}" title="${h(c.name)}">${icon(c.device_kind === "recorder" ? "webcam" : "camera")}<span>${h(c.name)}</span><small>${c.device_kind === "recorder" ? Number(c.channel || 0) + 1 : "IP"}</small></button>`;
+        const node = (selection, label, symbol, members, children) => {
+          const key = selection.kind + ":" + selection.id;
+          return `<details data-node="${h(key)}" ${treeOpen.get(key) === false && !query ? "" : "open"}><summary>${window.VWSIcons.html(symbol, "folder")}<button type="button" class="wall-tree-collection" draggable="${!!members.length}" data-collection="${h(JSON.stringify(selection))}" data-label="${h(label)}" ${members.length ? "" : "disabled"} title="${stateText("Открыть все камеры", "Open all cameras")}"><span>${h(label)}</span><small>${members.length}</small>${icon("plus")}</button></summary><div>${children}</div></details>`;
+        };
+        let html = `<div class="wall-tree-global"><button type="button" class="wall-tree-collection" draggable="true" data-collection="${h(JSON.stringify({ kind: "all" }))}" data-label="${stateText("Все источники", "All sources")}">${icon("monitor")}<span>${stateText("Все источники", "All sources")}</span><small>${cameras.length}</small>${icon("plus")}</button></div>`;
+        if (m.treeMode === "devices") {
+          const available = cameras;
+          const hosts = new Map();
+          for (const camera of available) {
+            const id = deviceKey(camera);
+            if (!hosts.has(id)) hosts.set(id, []);
+            hosts.get(id).push(camera);
+          }
+          for (const [id, members] of hosts) {
+            const label = deviceLabel(members[0]),
+              filtered = label.toLocaleLowerCase().includes(query)
+                ? members
+                : members.filter(match);
+            if (!filtered.length && query) continue;
+            html += node(
+              { kind: "device", id },
+              label,
+              members[0].device_kind === "recorder" ? "server" : "camera",
+              members,
+              filtered.map(leaf).join(""),
+            );
+          }
+        } else {
+          for (const space of groups.filter(
+            (g) => !m.group || g.id === m.group,
+          )) {
+            const all = model.collection(cameras, groups, {
+                kind: "space",
+                id: space.id,
+              }),
+              spaceMatch = space.name.toLocaleLowerCase().includes(query);
+            let children = model
+              .collection(cameras, groups, {
+                kind: "space",
+                id: space.id,
+                root_only: true,
+              })
+              .filter((c) => spaceMatch || match(c))
+              .map(leaf)
+              .join("");
+            for (const zone of space.zones || []) {
+              const members = model.collection(cameras, groups, {
+                kind: "zone",
+                space_id: space.id,
+                id: zone.id,
+              });
+              const filtered =
+                spaceMatch || zone.name.toLocaleLowerCase().includes(query)
+                  ? members
+                  : members.filter(match);
+              if (!query || filtered.length)
+                children += node(
+                  { kind: "zone", id: zone.id, space_id: space.id },
+                  zone.name,
+                  zone.icon || "map-pin",
+                  members,
+                  filtered.map(leaf).join(""),
+                );
+            }
+            if (!query || spaceMatch || children)
+              html += node(
+                { kind: "space", id: space.id },
+                space.name,
+                space.icon || "layers-3",
+                all,
+                children,
+              );
+          }
+          if (!m.group) {
+            const members = model.collection(cameras, groups, {
+                kind: "unassigned",
+              }),
+              filtered = members.filter(match);
+            if (filtered.length)
+              html += node(
+                { kind: "unassigned", id: "unassigned" },
+                stateText("Без пространства", "Unassigned"),
+                "folder-open",
+                members,
+                filtered.map(leaf).join(""),
+              );
+          }
         }
         return (
-          [...hosts]
-            .map(
-              ([key, cams]) =>
-                `<details data-recorder="${h(key)}" ${treeOpen.get(key) === false ? "" : "open"}><summary>${icon(cams[0].protocol === "dvrip" ? "server" : "camera")}<button type="button" class="wall-tree-recorder" data-add-recorder="${h(key)}" title="${stateText("Открыть все камеры устройства", "Open all device cameras")}"><span>${h(deviceLabel(cams[0]))}</span><small>${cams.length}</small>${icon("plus")}</button></summary><div>${cams.map((c) => `<button type="button" class="wall-tree-camera" draggable="true" data-camera="${h(c.id)}" title="${h(c.name)}">${icon("camera")}<span>${h(c.name)}</span><small>${c.protocol === "dvrip" ? Number(c.channel || 0) + 1 : "IP"}</small></button>`).join("")}</div></details>`,
-            )
-            .join("") ||
+          html ||
           `<p class="muted" style="padding:15px">${t("Ничего не найдено")}</p>`
         );
       }
+      function setCollection(selection, label = "") {
+        m.cells = model
+          .collection(cameras, groups, selection)
+          .map((c) => make(c.id));
+        m.group =
+          selection.kind === "space"
+            ? selection.id
+            : selection.kind === "zone"
+              ? selection.space_id
+              : "";
+        m.title = label;
+        m.page = 0;
+        focusRestore = null;
+        useLayout(model.fit(m.cells.length));
+        render();
+      }
       function bindTree() {
-        $$("[data-add-recorder]").forEach((b) =>
-          on(b, "click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const members = cameras.filter(
-              (c) => deviceKey(c) === b.dataset.addRecorder,
+        $$("[data-collection]").forEach((button) => {
+          on(button, "click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCollection(
+              JSON.parse(button.dataset.collection),
+              button.dataset.label,
             );
-            m.cells = members.map((c) => make(c.id));
-            m.group = "";
-            m.page = 0;
-            focusRestore = null;
-            useLayout(model.fit(m.cells.length));
-            render();
-          }),
-        );
-        $$(".wall-tree-camera").forEach((b) => {
-          on(b, "dragstart", (e) =>
-            e.dataTransfer.setData("text/plain", b.dataset.camera),
-          );
-          on(b, "dblclick", () => place(b.dataset.camera, selected));
-          on(b, "keydown", (e) => {
-            if (e.key === "Enter") place(b.dataset.camera, selected);
           });
+          on(button, "dragstart", (event) => {
+            captureTree();
+            event.stopPropagation();
+            event.dataTransfer.setData(
+              "application/x-vwshub-collection",
+              JSON.stringify({
+                selection: JSON.parse(button.dataset.collection),
+                label: button.dataset.label,
+              }),
+            );
+            event.dataTransfer.effectAllowed = "copy";
+          });
+        });
+        $$(".wall-tree-camera").forEach((button) => {
+          on(button, "dragstart", (event) => {
+            captureTree();
+            event.dataTransfer.setData("text/plain", button.dataset.camera);
+            event.dataTransfer.effectAllowed = "copy";
+          });
+          on(button, "dblclick", () => place(button.dataset.camera, selected));
+          on(button, "keydown", (event) => {
+            if (event.key === "Enter") place(button.dataset.camera, selected);
+          });
+        });
+        on($("#wall-tree-list"), "scroll", () => {
+          treeScroll = $("#wall-tree-list").scrollTop;
         });
       }
       function render() {
@@ -248,7 +392,7 @@
           pages = Math.max(1, Math.ceil(m.cells.length / cap));
         if (!cells.some((c) => c?.uid === selected))
           selected = cells.find(Boolean)?.uid || null;
-        root.innerHTML = `<section class="wall-console"><header class="wall-toolbar"><div class="wall-heading">${icon("monitor")}<h1>${t("Просмотр")}</h1><span>LIVE MONITOR</span></div><div class="row-actions"><button type="button" id="wall-tree-toggle" class="icon-btn" title="${t("Устройства")}">${icon("folder")}</button><div class="wall-layouts">${model.layouts.map((shape) => `<button type="button" data-layout="${shape.id}" aria-label="${shape.count} ${stateText("окон", "windows")}" title="${shape.count} ${stateText("окон", "windows")}" aria-pressed="${m.layout === shape.id}">${shape.count <= 16 ? `<span class="wall-layout-icon" style="--layout-columns:${shape.columns};--layout-large:${shape.large || 1}">${Array.from({ length: shape.count }, () => "<i></i>").join("")}</span>` : `<span class="wall-layout-count">${shape.count}</span>`}</button>`).join("")}</div><button type="button" class="btn btn-sm" id="view-save" title="${stateText("Сохранить в браузере", "Save in browser")}">${icon("check")}<span>${t("Сохранить")}</span></button><button type="button" class="icon-btn" id="view-export" title="${stateText("Экспорт вида", "Export view")}">${icon("download")}</button><button type="button" class="icon-btn" id="view-import" title="${stateText("Импорт вида", "Import view")}">${icon("upload")}</button><button type="button" class="icon-btn" id="wall-fullscreen" title="${stateText("На весь экран", "Fullscreen")}">${icon("expand")}</button><button type="button" class="icon-btn" id="wall-inspector-toggle" title="${t("Параметры подключения")}">${icon("settings")}</button></div></header><div class="wall-body ${m.tree ? "" : "no-tree"} ${m.inspector ? "with-inspector" : ""}"><aside class="wall-tree"><div class="wall-tree-head"><strong>${t("Камеры")}</strong><span>${cameras.length}</span></div><div class="wall-tree-filters"><input id="wall-search" class="field" placeholder="${t("Поиск камер")}" value="${h(treeQuery)}"><select class="select" id="wall-group"><option value="">${stateText("Все камеры", "All cameras")}</option>${groups.map((g) => `<option value="${h(g.id)}" ${m.group === g.id ? "selected" : ""}>${h(g.name)}</option>`).join("")}</select></div><div class="wall-tree-list" id="wall-tree-list">${treeHTML()}</div><div class="wall-tree-bottom"><button class="btn btn-sm" id="wall-all">${icon("grid")}${stateText("Все камеры на экран", "Show all cameras")}</button><p>${stateText("Перетащите камеру в ячейку.<br>Двойной щелчок — развернуть.", "Drag a camera into a cell.<br>Double-click to expand.")}</p></div></aside><div class="wall-monitor"><div class="wall-monitor-head"><span>${icon("grid")}${h(groups.find((g) => g.id === m.group)?.name || stateText("Основной монитор", "Main monitor"))}</span><div>${buttonIcon("wall-prev", "left", m.page === 0)}<span>${m.page + 1} / ${pages}</span>${buttonIcon("wall-next", "right", m.page === pages - 1)}<button type="button" class="icon-btn ${sequence ? "active" : ""}" id="wall-sequence" aria-pressed="${!!sequence}" title="${stateText("Автосмена каждые 15 секунд", "Cycle pages every 15 seconds")}">${icon("route")}</button></div></div><div class="wall-grid" id="wall-grid" data-layout="${m.layout}" style="--columns:${m.columns};--rows:${model.layout(m.layout).rows};--large:${model.layout(m.layout).large || 1};--wall-gap:${Number(H.state.branding.wall_gap ?? 3)}px">${Array.from({ length: cap }, (_, i) => tile(cells[i] || null, i)).join("")}</div><div class="wall-transport"><div id="wall-selected"></div><div class="row-actions"><button type="button" id="wall-reconnect" class="icon-btn" title="${t("Обновить")}">${icon("refresh")}</button><button type="button" id="wall-snapshot" class="icon-btn" title="${t("Фотоаппарат")}" aria-label="${t("Фотоаппарат")}">${icon("photo")}</button><button type="button" id="wall-to-archive" class="btn btn-sm">${icon("archive")}${t("Архив")}</button></div></div></div><aside class="wall-inspector" id="wall-inspector"></aside></div><footer class="wall-status"><span><i class="dot online"></i> VWSHub 0.8</span><span id="wall-streams">${stateText("Соединение с потоками…", "Connecting streams…")}</span><span id="wall-clock"></span></footer></section>`;
+        root.innerHTML = `<section class="wall-console"><header class="wall-toolbar"><div class="wall-heading">${icon("monitor")}<h1>${t("Просмотр")}</h1><span>LIVE MONITOR</span></div><div class="row-actions"><button type="button" id="wall-tree-toggle" class="icon-btn" aria-pressed="${m.tree}" aria-label="${stateText("Панель источников", "Source panel")}" title="${stateText("Панель источников", "Source panel")}">${icon(m.tree ? "panel-left-close" : "panel-left-open")}</button><div class="wall-layouts">${model.layouts.map((shape) => `<button type="button" data-layout="${shape.id}" aria-label="${shape.count} ${stateText(shape.count === 1 ? "окно" : shape.count === 4 ? "окна" : "окон", shape.count === 1 ? "window" : "windows")}" title="${shape.count} ${stateText(shape.count === 1 ? "окно" : shape.count === 4 ? "окна" : "окон", shape.count === 1 ? "window" : "windows")}" aria-pressed="${m.layout === shape.id}">${layoutIcon(shape)}</button>`).join("")}</div><button type="button" class="btn btn-sm" id="view-save" title="${stateText("Сохранить в браузере", "Save in browser")}">${icon("check")}<span>${t("Сохранить")}</span></button><button type="button" class="icon-btn" id="view-export" title="${stateText("Экспорт вида", "Export view")}">${icon("download")}</button><button type="button" class="icon-btn" id="view-import" title="${stateText("Импорт вида", "Import view")}">${icon("upload")}</button><button type="button" class="icon-btn" id="wall-fullscreen" title="${stateText("На весь экран", "Fullscreen")}">${icon("expand")}</button><button type="button" class="icon-btn" id="wall-inspector-toggle" title="${t("Параметры подключения")}">${icon("settings")}</button></div></header><div class="wall-body ${m.tree ? "" : "no-tree"} ${m.inspector ? "with-inspector" : ""}"><aside class="wall-tree"><div class="wall-tree-head"><strong>${stateText("Источники", "Sources")}</strong><span>${cameras.length}</span></div><div class="wall-tree-modes" role="tablist" aria-label="${stateText("Дерево источников", "Source tree")}"><button type="button" data-tree-mode="spaces" role="tab" aria-selected="${m.treeMode === "spaces"}">${icon("layers-3")}${stateText("Пространства", "Spaces")}</button><button type="button" data-tree-mode="devices" role="tab" aria-selected="${m.treeMode === "devices"}">${icon("video")}${stateText("Устройства", "Devices")}</button></div><div class="wall-tree-filters"><input id="wall-search" class="field" placeholder="${t("Поиск камер")}" value="${h(treeQuery)}"><select class="select" id="wall-group" ${m.treeMode === "devices" ? "hidden" : ""}><option value="">${stateText("Все пространства", "All spaces")}</option>${groups.map((g) => `<option value="${h(g.id)}" ${m.group === g.id ? "selected" : ""}>${h(g.name)}</option>`).join("")}</select></div><div class="wall-tree-list" id="wall-tree-list">${treeHTML()}</div><div class="wall-tree-bottom"><p>${stateText("Перетащите камеру в ячейку.<br>Двойной щелчок — развернуть.", "Drag a camera into a cell.<br>Double-click to expand.")}</p></div></aside><div class="wall-monitor"><div class="wall-monitor-head"><span>${icon("grid")}${h(m.title || groups.find((g) => g.id === m.group)?.name || stateText("Основной монитор", "Main monitor"))}</span><div>${buttonIcon("wall-prev", "left", m.page === 0)}<span>${m.page + 1} / ${pages}</span>${buttonIcon("wall-next", "right", m.page === pages - 1)}<button type="button" class="icon-btn ${sequence ? "active" : ""}" id="wall-sequence" aria-pressed="${!!sequence}" title="${stateText("Автосмена каждые 15 секунд", "Cycle pages every 15 seconds")}">${icon("route")}</button></div></div><div class="wall-grid" id="wall-grid" data-layout="${m.layout}" style="--columns:${m.columns};--rows:${model.layout(m.layout).rows};--large:${model.layout(m.layout).large || 1};--wall-gap:${Number(H.state.branding.wall_gap ?? 3)}px">${Array.from({ length: cap }, (_, i) => tile(cells[i] || null, i)).join("")}</div><div class="wall-transport"><div id="wall-selected"></div><div class="row-actions"><button type="button" id="wall-reconnect" class="icon-btn" title="${t("Обновить")}">${icon("refresh")}</button><button type="button" id="wall-snapshot" class="icon-btn" title="${t("Фотоаппарат")}" aria-label="${t("Фотоаппарат")}">${icon("photo")}</button><button type="button" id="wall-to-archive" class="icon-btn" title="${t("Архив")}" aria-label="${t("Архив")}">${icon("archive")}</button></div></div></div><aside class="wall-inspector" id="wall-inspector"></aside></div><footer class="wall-status"><span><i class="dot online"></i> VWSHub 0.8.5</span><span id="wall-streams">${stateText("Соединение с потоками…", "Connecting streams…")}</span><span id="wall-clock"></span></footer></section>`;
         for (const [id, tile] of retained) {
           const placeholder = $("[data-tile='" + id + "']");
           if (placeholder) {
@@ -256,12 +400,33 @@
             const item = players.get(id);
             if (item?.video.paused) item.video.play().catch(() => {});
             const index = visibleCells.findIndex((c) => c?.uid === id);
+            const source = camera(item.camera_id);
+            tile.setAttribute("aria-label", source.name);
+            const name = tile.querySelector("header strong");
+            name.textContent = source.name;
+            name.title = source.name;
+            tile.querySelector("footer span").textContent =
+              deviceLabel(source) +
+              (source.protocol === "dvrip"
+                ? ` / CH ${Number(source.channel || 0) + 1}`
+                : "");
             tile.querySelector(".wall-channel").textContent = String(
               m.page * capacity() + index + 1,
             ).padStart(2, "0");
           }
         }
         $("#wall-tree-list").scrollTop = treeScroll;
+        requestAnimationFrame(() => {
+          if (!disposed && $("#wall-tree-list"))
+            $("#wall-tree-list").scrollTop = treeScroll;
+        });
+        $$("[data-tree-mode]").forEach((button) =>
+          on(button, "click", () => {
+            m.treeMode = button.dataset.treeMode;
+            treeScroll = 0;
+            render();
+          }),
+        );
         on($("#wall-tree-toggle"), "click", () => {
           m.tree = !m.tree;
           $(".wall-body").classList.toggle("no-tree", !m.tree);
@@ -285,8 +450,8 @@
           m.group = e.target.value;
           setGroup();
         });
-        on($("#wall-all"), "click", () => setGroup());
-        $$("[data-layout]").forEach((b) =>
+
+        $$("button[data-layout]").forEach((b) =>
           on(b, "click", () => {
             useLayout(b.dataset.layout);
             m.page = 0;
@@ -539,6 +704,21 @@
           on(el, "dragleave", () => el.classList.remove("drop-target"));
           on(el, "drop", (e) => {
             e.preventDefault();
+            const collection = e.dataTransfer.getData(
+              "application/x-vwshub-collection",
+            );
+            if (collection) {
+              try {
+                const data = JSON.parse(collection);
+                if (
+                  ["space", "zone", "device", "unassigned"].includes(
+                    data.selection?.kind,
+                  )
+                )
+                  setCollection(data.selection, data.label);
+              } catch (_) {}
+              return;
+            }
             const source = Number(
                 e.dataTransfer.getData("application/x-vwshub-tile"),
               ),
@@ -599,14 +779,11 @@
         }
       }
       function setGroup() {
-        const group = groups.find((g) => g.id === m.group);
-        m.cells = cameras
-          .filter((c) => !group || group.camera_ids.includes(c.id))
-          .map((c) => make(c.id));
-        useLayout(model.fit(m.cells.length));
-        m.page = 0;
-        focusRestore = null;
-        render();
+        const space = groups.find((g) => g.id === m.group);
+        setCollection(
+          space ? { kind: "space", id: space.id } : { kind: "all" },
+          space?.name || "",
+        );
       }
       function selectedCamera() {
         return camera(m.cells.find((c) => c?.uid === selected)?.camera_id);
@@ -870,6 +1047,29 @@
         if (e.key === "ArrowLeft" && !$("#wall-prev").disabled)
           $("#wall-prev").click();
       });
+      on(window, "vwshub:catalog", () => {
+        if (disposed) return;
+        const old = m.cells.filter(Boolean).length;
+        m.cells = model.reconcile(m.cells, cameras);
+        if (focusRestore && !m.cells.some((c) => c?.uid === selected)) {
+          useLayout(focusRestore.layout);
+          m.page = focusRestore.page;
+          focusRestore = null;
+        }
+        if (m.group && !groups.some((g) => g.id === m.group)) {
+          m.group = "";
+          m.title = "";
+        }
+        render();
+        if (m.cells.filter(Boolean).length < old)
+          toast(
+            stateText(
+              "Недоступные камеры убраны с видеостены",
+              "Unavailable cameras removed from the video wall",
+            ),
+            "warning",
+          );
+      });
       if (matchMedia("(max-width:560px)").matches) m.tree = false;
       render();
       const clock = setInterval(updateClock, 1000);
@@ -882,7 +1082,16 @@
         stopPlayers();
         context?.remove();
         m.cells = m.cells.map((c) =>
-          c ? { camera_id: c.camera_id, stream: c.stream } : null,
+          c
+            ? {
+                camera_id: c.camera_id,
+                stream: c.stream,
+                visibility_revision: c.visibility_revision || 0,
+                ...(c.origin_id
+                  ? { origin_id: c.origin_id, source_id: c.source_id }
+                  : {}),
+              }
+            : null,
         );
       };
     },

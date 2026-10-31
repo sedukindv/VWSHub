@@ -14,7 +14,14 @@
         })[c],
     );
   const svg = (name = "device") =>
-    `<svg viewBox="0 0 24 24" aria-hidden="true">${{ device: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h6m-6 10h6"/>', camera: '<path d="m16 9 5-3v12l-5-3"/><rect x="3" y="6" width="13" height="12" rx="2"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', refresh: '<path d="M20 7v5h-5M4 17v-5h5M5 9a7 7 0 0 1 12-4l3 7M4 12l3 7a7 7 0 0 0 12-4"/>', link: '<path d="m10 13 4-4m-6 6-3 3a4 4 0 0 1-5-5l5-5m11 1 3-3a4 4 0 0 1 5 5l-5 5"/>', check: '<path d="m5 12 4 4L19 6"/>', warning: '<path d="m12 3 10 18H2zM12 9v4m0 4h.01"/>', disk: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="12" r="5"/><path d="m12 12 5 6"/>', users: '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m2-17a3 3 0 0 1 0 6m2 11v-3a6 6 0 0 0-2-4"/>' }[name] || ""}</svg>`;
+    window.VWSIcons.html(
+      {
+        device: "server",
+        camera: "webcam",
+        warning: "triangle-alert",
+        disk: "hard-drive",
+      }[name] || name,
+    );
   const titles = {
     location: ["Дата и время", "Date and time"],
     ntp: ["NTP", "NTP"],
@@ -58,7 +65,7 @@
       ptzStop = null;
     const cameraGroups = new Map();
     cameras.forEach((cam) => {
-      const key = [cam.protocol, cam.ip, cam.port].join("|");
+      const key = cam.recorder_id || [cam.protocol, cam.ip, cam.port].join("|");
       if (!cameraGroups.has(key))
         cameraGroups.set(key, { ...cam, members: [] });
       cameraGroups.get(key).members.push(cam);
@@ -111,7 +118,7 @@
         dvrip: devices.filter((c) => c.protocol === "dvrip").length,
         onvif: devices.filter((c) => c.protocol !== "dvrip").length,
       };
-      root.innerHTML = `<section class="dv-page"><header class="dv-heading page-head"><div><p class="eyebrow">${t("ОБОРУДОВАНИЕ", "HARDWARE")}</p><h1>${t("Устройства", "Devices")}</h1><p>${t("Настройки регистраторов и камер в одном рабочем пространстве.", "Configure recorders and cameras in one workspace.")}</p></div><div class="page-actions"><span class="dv-total">${devices.length} ${t("устройств", "devices")}</span><button type="button" class="btn btn-primary" id="device-add-recorder">${options.hub?.icon("plus") || "+"}${t("Добавить регистратор", "Add recorder")}</button></div></header><div class="dv-board-toolbar"><div class="dv-category-tabs" role="tablist">${[
+      root.innerHTML = `<section class="dv-page"><header class="dv-heading page-head"><div><p class="eyebrow">${t("ОБОРУДОВАНИЕ", "HARDWARE")}</p><h1>${t("Управление оборудованием", "Hardware management")}</h1><p>${t("Настройки регистраторов и камер в одном рабочем пространстве.", "Configure recorders and cameras in one workspace.")}</p></div><div class="page-actions"><span class="dv-total">${devices.length} ${t("устройств", "devices")}</span><button type="button" class="btn btn-primary" id="device-add-recorder">${options.hub?.icon("plus") || "+"}${t("Каталог устройств", "Device catalog")}</button></div></header><div class="dv-board-toolbar"><div class="dv-category-tabs" role="tablist">${[
         ["all", t("Все устройства", "All devices")],
         ["dvrip", t("XM / регистраторы", "XM / recorders")],
         ["onvif", t("IP / ONVIF", "IP / ONVIF")],
@@ -129,8 +136,7 @@
         toolbar = q(".dv-board-toolbar");
       head.before(sticky);
       sticky.append(head, toolbar);
-      q("#device-add-recorder").onclick = () =>
-        window.VWSAdmin.recorder(options.hub, options.onCatalogChanged);
+      q("#device-add-recorder").onclick = () => options.hub.showView("cameras");
       qa("[data-category]").forEach(
         (b) =>
           (b.onclick = () => {

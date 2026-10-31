@@ -1,4 +1,4 @@
-VWSHub 0.8 — third-party notices
+VWSHub 0.8.5 — third-party notices
 Python packages are installed separately; their own licenses remain applicable.
 
 
@@ -268,3 +268,9 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+Lucide 1.65.0 — static/vendor/lucide.min.js
+Source: https://lucide.dev/ and https://www.npmjs.com/package/lucide
+ISC license and notices for Feather-derived icons:
+static/vendor/LUCIDE-LICENSE.txt (included in this distribution).

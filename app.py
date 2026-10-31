@@ -1,4 +1,4 @@
-"""VWSHub 0.8 entry point. Use a production WSGI server for deployment."""
+"""VWSHub 0.8.5 entry point. Use a production WSGI server for deployment."""
 import os
 from hub.core import create_app
 

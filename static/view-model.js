@@ -32,7 +32,7 @@
       !value ||
       typeof value !== "object" ||
       value.format !== "vwshub.view" ||
-      ![1, 2].includes(value.version) ||
+      ![1, 2, 3].includes(value.version) ||
       !Array.isArray(value.cells) ||
       value.cells.length > (value.version === 1 ? 256 : 4096)
     )
@@ -40,11 +40,14 @@
     const shape =
       value.version === 1 && [1, 2, 3, 4].includes(value.columns)
         ? layout(value.columns ** 2)
-        : value.version === 2 && typeof value.layout === "string"
+        : value.version >= 2 && typeof value.layout === "string"
           ? layout(value.layout)
           : null;
     if (!shape) throw new Error("Некорректный файл вида VWSHub");
-    const known = new Set(cameras.map((c) => c.id));
+    const known = new Map(
+      cameras.filter((c) => !c.is_hidden).map((c) => [c.id, c]),
+    );
+    const identities=new Map(cameras.filter(c=>!c.is_hidden&&c.origin_id).map(c=>[c.origin_id+":"+(c.import_id||c.id),c]));
     let unavailable = 0;
     const cells = value.cells.map((cell) => {
       if (cell === null) return null;
@@ -56,15 +59,35 @@
         !["main", "sub"].includes(cell.stream)
       )
         throw new Error("Некорректная ячейка вида");
-      if (!known.has(cell.camera_id)) {
+      if (
+        cell.visibility_revision !== undefined &&
+        (!Number.isSafeInteger(cell.visibility_revision) ||
+          cell.visibility_revision < 0)
+      )
+        throw new Error("Некорректная ревизия видимости камеры");
+      const portable=value.version===3&&cell.origin_id!==undefined;
+      if(portable&&(!/^[A-Za-z0-9_-]{1,100}$/.test(cell.origin_id)||typeof cell.origin_id!=="string"||typeof cell.source_id!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(cell.source_id)))throw new Error("Некорректная ссылка источника");
+      const source=portable?identities.get(cell.origin_id+":"+cell.source_id):known.get(cell.camera_id);
+      if (
+        !source ||
+        Number(cell.visibility_revision || 0) !==
+          Number(source.visibility_revision || 0)
+      ) {
         unavailable++;
         return null;
       }
-      return { camera_id: cell.camera_id, stream: cell.stream };
+      return {
+        camera_id: source.id,
+        stream: cell.stream,
+        ...(portable?{origin_id:cell.origin_id,source_id:cell.source_id}:{}),
+        ...(cell.visibility_revision
+          ? { visibility_revision: cell.visibility_revision }
+          : {}),
+      };
     });
     return {
       format: "vwshub.view",
-      version: 2,
+      version: 3,
       layout: shape.id,
       columns: shape.columns,
       cells,
@@ -78,7 +101,7 @@
       throw new Error("В виде может быть до 4096 камер");
     return {
       format: "vwshub.view",
-      version: 2,
+      version: 3,
       layout: selected.id,
       columns: selected.columns,
       cells: cells.map((c) =>
@@ -86,6 +109,10 @@
           ? {
               camera_id: c.camera_id,
               stream: c.stream === "main" ? "main" : "sub",
+              ...(c.visibility_revision
+                ? { visibility_revision: c.visibility_revision }
+                : {}),
+              ...(c.origin_id?{origin_id:c.origin_id,source_id:c.source_id||c.camera_id}:{}),
             }
           : null,
       ),
@@ -116,5 +143,57 @@
       byte.toString(16).padStart(2, "0"),
     ).join("");
   }
-  return { layouts, layout, fit, normalize, serialize, pan, consumerId };
+  function reconcile(cells, cameras) {
+    const known = new Map(
+      cameras.filter((c) => !c.is_hidden).map((c) => [c.id, c]),
+    );
+    return cells.map((cell) =>
+      cell &&
+      known.has(cell.camera_id) &&
+        (!cell.origin_id||(cell.origin_id===known.get(cell.camera_id).origin_id&&cell.source_id===(known.get(cell.camera_id).import_id||cell.camera_id)))&&
+      Number(cell.visibility_revision || 0) ===
+        Number(known.get(cell.camera_id).visibility_revision || 0)
+        ? cell
+        : null,
+    );
+  }
+  function collection(cameras, spaces, selection = { kind: "all" }) {
+    const available = cameras.filter((c) => !c.is_hidden),
+      byId = new Map(available.map((c) => [c.id, c]));
+    if (selection.kind === "all") return available;
+    if (selection.kind === "device")
+      return available.filter((c) => c.recorder_id === selection.id);
+    if (selection.kind === "unassigned") {
+      const assigned = new Set(
+        spaces.flatMap((space) => space.camera_ids || []),
+      );
+      return available.filter((c) => !assigned.has(c.id));
+    }
+    const space = spaces.find(
+      (s) => s.id === (selection.space_id || selection.id),
+    );
+    if (!space || !["space", "zone"].includes(selection.kind)) return [];
+    const ordered=space.members?[...space.members.filter(m=>!m.zone_id),...(space.zones||[]).flatMap(z=>space.members.filter(m=>m.zone_id===z.id))]:null;
+    const ids = ordered
+      ? ordered
+          .filter((member) =>
+            selection.kind === "zone"
+              ? member.zone_id === selection.id
+              : !selection.root_only || !member.zone_id,
+          )
+          .map((m) => m.channel_id)
+      : space.camera_ids || [];
+    return [...new Set(ids)].map((id) => byId.get(id)).filter(Boolean);
+  }
+  return {
+    layouts,
+    layout,
+    fit,
+    normalize,
+    serialize,
+    pan,
+    consumerId,
+    reconcile,
+    collection,
+  };
 });
