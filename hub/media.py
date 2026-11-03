@@ -117,19 +117,21 @@ class LiveManager:
         except Exception: pass
         shutil.rmtree(item["directory"], ignore_errors=True)
 
-    def stop(self, cam_id, stream):
-        with self.lock: self._stop_locked((cam_id, stream))
+    def stop(self, cam_id, stream, container="ts"):
+        with self.lock: self._stop_locked((cam_id, stream, container))
 
-    def release(self, cam_id, stream, consumer):
+    def release(self, cam_id, stream, consumer, container="ts"):
         """Release this browser's lease; other browsers keep their shared stream."""
+        if container not in ("ts", "fmp4"): return
+        key = (cam_id, stream, container)
         with self.lock:
-            item = self.streams.get((cam_id, stream))
+            item = self.streams.get(key)
             if not item: return
             leases = item.setdefault("leases", {})
             leases.pop(consumer, None)
             cutoff = time.monotonic() - 30
             if not any(seen > cutoff for seen in leases.values()):
-                self._stop_locked((cam_id, stream))
+                self._stop_locked(key)
 
     def reap(self):
         """Bound abandoned FFmpeg processes even when a browser closes abruptly."""
@@ -144,15 +146,16 @@ class LiveManager:
         with self.lock:
             for k in list(self.streams): self._stop_locked(k)
 
-    def ensure(self, cam_id, stream, consumer="legacy"):
+    def ensure(self, cam_id, stream, consumer="legacy", container="ts"):
         if stream not in ("main", "sub"): raise ValueError("Поток: main или sub")
+        if container not in ("ts", "fmp4"): raise ValueError("Формат Live: ts или fmp4")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(cam_id)): raise ValueError("Некорректный идентификатор камеры")
         cam = get_camera(cam_id)
         if not cam: raise ValueError("Камера не найдена")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg: raise RuntimeError("FFmpeg не установлен")
 
-        key = (cam_id, stream)
+        key = (cam_id, stream, container)
         with self.lock:
             for expired,item in list(self.streams.items()):
                 if item['process'].poll() is not None:self._stop_locked(expired)
@@ -163,19 +166,29 @@ class LiveManager:
             if ex: self._stop_locked(key)
 
             if len(self.streams)>=resources()["max_live_streams"]: raise RuntimeError("Достигнут лимит одновременных потоков сервера")
-            directory = self.root / f"{cam_id}_{stream}"
+            directory = self.root / f"{cam_id}_{stream}_{container}"
             shutil.rmtree(directory, ignore_errors=True)
             directory.mkdir(parents=True, exist_ok=True)
             log_file = open(directory / "ffmpeg.log", "ab", buffering=0)
 
+            hls_args = [
+                "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
+                "-hls_delete_threshold", "2",
+                "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
+            ]
+            if container == "fmp4":
+                hls_args += [
+                    "-hls_segment_type", "fmp4",
+                    "-hls_fmp4_init_filename", "init.mp4",
+                    "-hls_segment_filename", str(directory / "seg_%06d.m4s"),
+                ]
+            else:
+                hls_args += ["-hls_segment_filename", str(directory / "seg_%06d.ts")]
             cmd = [
                 ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning",
                 "-rtsp_transport", "tcp", "-i", build_rtsp_live_url(cam, stream),
                 "-map", "0:v:0", "-an", "-c:v", "copy",
-                "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
-                "-hls_delete_threshold", "2",
-                "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
-                "-hls_segment_filename", str(directory / "seg_%06d.ts"),
+                *hls_args,
                 str(directory / "index.m3u8"),
             ]
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log_file)
@@ -972,26 +985,36 @@ def register_media(app, rt):
     def stop_live():
         body=request.get_json(silent=True) or {};cam,err=authorized(body.get('cam_id'))
         if err:return err
-        service.live.release(cam['id'],body.get('stream','main'),live_consumer(body.get('consumer')))
+        container=body.get('container','ts')
+        if container not in ('ts','fmp4'):return jsonify(error='Неверный формат Live'),400
+        service.live.release(cam['id'],body.get('stream','main'),live_consumer(body.get('consumer')),container)
         return jsonify(success=True)
     @bp.get('/live/<cam_id>/<stream>/index.m3u8')
     def live_playlist(cam_id,stream):
         cam,err=authorized(cam_id)
         if err:return err
+        container=request.args.get('container','ts')
+        if container not in ('ts','fmp4'):return jsonify(error='Неверный формат Live'),400
         consumer=request.args.get('consumer');lease=live_consumer(consumer)
         try:
             began=time.monotonic()
-            item=service.live.ensure(cam_id,stream,lease);playlist=item['directory']/'index.m3u8'
+            item=service.live.ensure(cam_id,stream,lease,container);playlist=item['directory']/'index.m3u8'
             deadline=time.monotonic()+12
             while not playlist.exists() and time.monotonic()<deadline and item['process'].poll() is None:time.sleep(.1)
             if not playlist.exists():
                 if not item.get('reported_failure'):
-                    item['reported_failure']=True;hardware_event(rt,'live.failed',cam,level='error',stream=stream,ffmpeg_returncode=item['process'].poll(),duration_ms=round((time.monotonic()-began)*1000))
+                    item['reported_failure']=True;hardware_event(rt,'live.failed',cam,level='error',stream=stream,container=container,ffmpeg_returncode=item['process'].poll(),duration_ms=round((time.monotonic()-began)*1000))
                 return jsonify(error='Поток ещё не готов или недоступен'),503
             if not item.get('reported_ready'):
-                item['reported_ready']=True;hardware_event(rt,'live.ready',cam,stream=stream,duration_ms=round((time.monotonic()-began)*1000))
+                item['reported_ready']=True;hardware_event(rt,'live.ready',cam,stream=stream,container=container,duration_ms=round((time.monotonic()-began)*1000))
             if consumer:
-                lines=[line+'?consumer='+consumer if re.fullmatch(r'seg_\d+\.ts',line) else line for line in playlist.read_text(encoding='utf-8').splitlines()]
+                lines=[]
+                for line in playlist.read_text(encoding='utf-8').splitlines():
+                    if line.startswith('#EXT-X-MAP:'):
+                        line=re.sub(r'URI="([^"]+)"',lambda match:f'URI="{match.group(1)}?consumer={consumer}&container={container}"',line)
+                    elif re.fullmatch(r'seg_\d+\.(?:ts|m4s)',line):
+                        line+=f'?consumer={consumer}&container={container}'
+                    lines.append(line)
                 return Response('\n'.join(lines)+'\n',mimetype='application/vnd.apple.mpegurl',headers={'Cache-Control':'no-store'})
             return send_from_directory(item['directory'],'index.m3u8',mimetype='application/vnd.apple.mpegurl',max_age=0)
         except (ValueError,RuntimeError) as exc:return jsonify(error=str(exc)),503
@@ -999,13 +1022,23 @@ def register_media(app, rt):
     def live_segment(cam_id,stream,filename):
         cam,err=authorized(cam_id)
         if err:return err
-        if stream not in ('main','sub') or not re.fullmatch(r'seg_\d+\.ts',filename):return jsonify(error='Сегмент не найден'),404
+        container=request.args.get('container','ts')
+        if stream not in ('main','sub') or container not in ('ts','fmp4'):return jsonify(error='Сегмент не найден'),404
+        if container=='ts' and re.fullmatch(r'seg_\d+\.ts',filename):
+            mimetype='video/mp2t'
+        elif container=='fmp4' and filename=='init.mp4':
+            mimetype='video/mp4'
+        elif container=='fmp4' and re.fullmatch(r'seg_\d+\.m4s',filename):
+            mimetype='video/iso.segment'
+        else:
+            return jsonify(error='Сегмент не найден'),404
+        key=(cam_id,stream,container)
         with service.live.lock:
-            item=service.live.streams.get((cam_id,stream))
+            item=service.live.streams.get(key)
             if not item:return jsonify(error='Поток не запущен'),404
             item.setdefault('leases',{})[live_consumer(request.args.get('consumer'))]=time.monotonic()
             directory=item['directory']
-        return send_from_directory(directory,filename,mimetype='video/mp2t',max_age=0)
+        return send_from_directory(directory,filename,mimetype=mimetype,max_age=0)
     @bp.get('/api/recordings')
     def recordings():
         cam,err=authorized(request.args.get('cam_id'),True)
