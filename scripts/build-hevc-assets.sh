@@ -32,6 +32,8 @@ window.VWSHevcReady = attachHevcSupport({
   workerUrl: "/static/vendor/hevc/transcode-worker.js",
   wasmUrl: "/static/vendor/hevc/hevc-decode.js",
   wasmBinaryUrl: "/static/vendor/hevc/hevc-decode.wasm",
+  fps: 6,
+  bitrate: 800000,
   logLevel: "warn",
 }).catch((error) => {
   console.error("[VWSHub] HEVC plugin initialization failed:", error);
