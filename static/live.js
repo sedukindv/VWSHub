@@ -18,7 +18,8 @@
         life = new AbortController(),
         signal = life.signal,
         key = "vwshub.view." + user.username;
-      const consumer = model.consumerId(crypto);
+      const consumer = model.consumerId(crypto),
+        hevcFmp4TestCameraId = "cam_4280b76eaca54f2ab3a5ee1997ad2380";
       let disposed = false,
         uid = 0,
         players = new Map(),
@@ -140,7 +141,12 @@
         for (const c of keys.values())
           H.api("/api/live/stop", {
             method: "POST",
-            body: { cam_id: c.camera_id, stream: c.stream, consumer },
+            body: {
+              cam_id: c.camera_id,
+              stream: c.stream,
+              container: c.container || (c.camera_id === hevcFmp4TestCameraId ? "fmp4" : "ts"),
+              consumer,
+            },
             keepalive: true,
           }).catch(() => {});
       }
@@ -956,11 +962,13 @@
           overlay = $("#live-overlay-" + cell.uid),
           badge = $("#live-status-" + cell.uid);
         if (!video) return;
+        const container = cell.camera_id === hevcFmp4TestCameraId ? "fmp4" : "ts";
         const item = {
           video,
           hls: null,
           stream: cell.stream,
           camera_id: cell.camera_id,
+          container,
         };
         players.set(cell.uid, item);
         const set = (status, text) => {
@@ -988,30 +996,45 @@
           set("playing", "LIVE");
         };
         video.onerror = fail;
-        const url = `/live/${encodeURIComponent(cell.camera_id)}/${cell.stream}/index.m3u8?consumer=${consumer}`;
-        if (window.Hls?.isSupported()) {
-          const hls = new Hls({
-            liveSyncDurationCount: 3,
-            lowLatencyMode: false,
-            maxBufferLength: 12,
-          });
-          item.hls = hls;
-          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(fail));
-          hls.on(Hls.Events.ERROR, (_e, data) => {
-            if (!data.fatal || disposed || players.get(cell.uid) !== item)
-              return;
-            hls.destroy();
-            players.delete(cell.uid);
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && attempt < 2)
-              later(() => attach(cell, attempt + 1), 2000 * (attempt + 1));
-            else fail();
-          });
-          hls.loadSource(url);
-          hls.attachMedia(video);
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          video.src = url;
-          video.play().catch(fail);
-        } else fail();
+        const url = `/live/${encodeURIComponent(cell.camera_id)}/${cell.stream}/index.m3u8?consumer=${consumer}&container=${container}`;
+        const startPlayer = async () => {
+          let hevcHandle = null;
+          try {
+            hevcHandle = await (window.VWSHevcReady || Promise.resolve(null));
+          } catch (error) {
+            console.warn("[VWSHub] HEVC plugin initialization failed", error);
+          }
+          if (disposed || !video.isConnected || players.get(cell.uid) !== item)
+            return;
+          if (window.Hls?.isSupported()) {
+            const hls = new Hls({
+              liveSyncDurationCount: 3,
+              lowLatencyMode: false,
+              maxBufferLength: 12,
+              ...(container === "fmp4" && typeof MediaSource !== "undefined"
+                ? { preferManagedMediaSource: false }
+                : {}),
+            });
+            item.hls = hls;
+            if (container === "fmp4") hevcHandle?.attachComputeAware?.(hls);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(fail));
+            hls.on(Hls.Events.ERROR, (_e, data) => {
+              if (!data.fatal || disposed || players.get(cell.uid) !== item)
+                return;
+              hls.destroy();
+              players.delete(cell.uid);
+              if (data.type === Hls.ErrorTypes.NETWORK_ERROR && attempt < 2)
+                later(() => attach(cell, attempt + 1), 2000 * (attempt + 1));
+              else fail();
+            });
+            hls.loadSource(url);
+            hls.attachMedia(video);
+          } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+            video.src = url;
+            video.play().catch(fail);
+          } else fail();
+        };
+        startPlayer();
       }
       function updateClock() {
         const el = $("#wall-clock");
