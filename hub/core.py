@@ -306,7 +306,7 @@ def register_core(app,runtime):
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Referrer-Policy"]="same-origin"
         response.headers["X-Frame-Options"]="SAMEORIGIN"
-        response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+        response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
         if request.path.startswith("/api/") or request.endpoint in {"index","login","setup"}:response.headers["Cache-Control"]="no-store"
         return response
 
