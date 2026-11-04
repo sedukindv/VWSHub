@@ -152,3 +152,13 @@ test('slider snaps gaps to nearest playable second and never the exclusive file 
  assert.equal(core.nearest([],15000),null);
  assert.equal(core.nearest(intervals,NaN),null);
 });
+
+ test('ruler keeps sparse labels on mobile and seconds need more space',()=>{
+  assert.equal(core.timelineTickCount(220,86400000),2);
+  assert.equal(core.timelineTickCount(320,86400000),3);
+  assert.ok(core.timelineTickCount(390,60000)<core.timelineTickCount(390,86400000));
+  for(const width of [320,360,390,430,768,1024,1280,1440,1920]){
+    const count=core.timelineTickCount(width,86400000);
+    assert.ok(count>=1 && count<=12 && width/count>=90);
+  }
+ });

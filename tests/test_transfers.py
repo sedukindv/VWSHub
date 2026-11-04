@@ -201,3 +201,25 @@ def test_confirmed_pending_reference_remains_matched_after_repeat_import(owner,c
     apply(owner,"spaces",preview(owner,"spaces",payload,"merge"))
     updated=next(s for s in catalog.store.get_groups() if s["id"]==space["id"])
     assert updated["members"][0]["channel_id"]=="cam_a"
+
+
+def test_portable_user_avatar_is_bundled_and_only_written_at_apply(app,owner,isolated_path):
+    import base64,struct,zlib
+    from hub.core import create_app
+    def chunk(kind,data):return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+    raw=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",1,1,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(b"\x00\x70\x80\x90"))+chunk(b"IEND",b"")
+    response=owner.post("/api/users",json={"username":"portable_avatar","password":"long-avatar-password","avatar":"data:image/png;base64,"+base64.b64encode(raw).decode(),"language":"ja","timezone":"Asia/Tokyo"})
+    assert response.status_code==201
+    payload=export(owner,"users")
+    assert len(payload["images"])==1
+    target=create_app(isolated_path/"target-data",{"TESTING":True,"REGISTER_EXTENSIONS":False,"CSRF_ENABLED":False,"LEGACY_DATA_DIR":isolated_path/"target-legacy"})
+    client=target.test_client()
+    assert client.post("/setup",json={"username":"target_admin","password":"target-password-123"}).status_code==200
+    plan=preview(client,"users",payload)
+    images=target.extensions["vwshub"].store.images
+    assert not list(images.directory.iterdir())
+    apply(client,"users",plan)
+    imported=next(u for u in target.extensions["vwshub"].store.get_users() if u["username"]=="portable_avatar")
+    assert imported["avatar"].startswith("/images/") and client.get(imported["avatar"]).data==raw
+    assert imported["timezone"]=="Asia/Tokyo" and imported["language"]=="ja"
+    assert b"data:image/" not in target.extensions["vwshub"].store.users_file.read_bytes()

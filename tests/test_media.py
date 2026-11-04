@@ -23,18 +23,18 @@ def test_live_leases_are_isolated_between_tabs_of_the_same_account(app_media,mon
     (directory/'seg_000001.ts').write_bytes(b'synthetic segment')
     process=Mock();process.poll.return_value=0
     item={'process':process,'directory':directory,'leases':{}}
-    def ensure(cam,stream,consumer):
-        item['leases'][consumer]=time.monotonic();service.live.streams[(cam,stream)]=item;return item
+    def ensure(cam,stream,consumer,container="ts"):
+        item['leases'][consumer]=time.monotonic();service.live.streams[(cam,stream,container)]=item;return item
     monkeypatch.setattr(service.live,'ensure',ensure)
     client=app.test_client();one='a'*32;two='b'*32
     result=client.get('/live/ch1/main/index.m3u8?consumer='+one)
     assert result.status_code==200 and ('seg_000001.ts?consumer='+one) in result.get_data(as_text=True)
     assert client.get('/live/ch1/main/index.m3u8?consumer='+two).status_code==200
     assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','consumer':one}).status_code==200
-    assert ('ch1','main') in service.live.streams and set(item['leases'])=={'same_account:'+two}
+    assert ('ch1','main','ts') in service.live.streams and set(item['leases'])=={'same_account:'+two}
     assert client.get('/live/ch1/main/seg_000001.ts?consumer='+two).status_code==200
     assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','consumer':two}).status_code==200
-    assert ('ch1','main') not in service.live.streams
+    assert ('ch1','main','ts') not in service.live.streams
 
 
 def test_connection_test_uses_the_edited_rtsp_host_and_path(app_media,monkeypatch):
@@ -309,3 +309,318 @@ def test_snapshot_rechecks_scope_after_slow_device_response(app_media,monkeypatc
         return SimpleNamespace(returncode=0,stdout=b'synthetic-frame')
     monkeypatch.setattr(media.subprocess,'run',capture)
     assert app.test_client().get('/api/cameras/ch1/snapshot').status_code==403
+
+
+def test_live_audio_uses_confirmed_rtsp_track_not_archive_audio_configuration(app_media,monkeypatch):
+    app,service,state,cameras=app_media
+    state['archive']=False
+    run=Mock(return_value=SimpleNamespace(returncode=0,stdout=b'{"streams":[{"codec_type":"audio","codec_name":"pcm_alaw"}]}'))
+    monkeypatch.setattr(media.shutil,'which',lambda name:'test-'+name)
+    monkeypatch.setattr(media.subprocess,'run',run)
+    with app.test_request_context():
+        result=service.live_audio_capabilities(cameras['ch1'],'sub')
+        assert result['supported'] is True and result['kind']=='live_audio' and result['codec']=='pcm_alaw'
+        service.live_audio_capabilities(cameras['ch1'],'sub')
+        assert run.call_count==1
+        command=run.call_args.args[0]
+        assert '-show_entries' in command and 'stream=1.sdp' in command[command.index('-i')+1]
+        assert '-rw_timeout' not in command
+        run.return_value.stdout=b'{"streams":[]}'
+        assert service.live_audio_capabilities(cameras['ch1'],'main')['supported'] is False
+
+
+def test_video_and_audio_share_one_factual_probe_but_profiles_and_channels_do_not(app_media,monkeypatch):
+    app,service,_,cams=app_media
+    run=Mock(return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'streams':[
+        {'codec_type':'video','codec_name':'hevc','width':1920,'height':1080,'avg_frame_rate':'25/1'},
+        {'codec_type':'audio','codec_name':'aac'}]}).encode()))
+    monkeypatch.setattr(media.shutil,'which',lambda name:'test-'+name)
+    monkeypatch.setattr(media.subprocess,'run',run)
+    with app.test_request_context():
+        video=service.live_video_capabilities(cams['ch1'],'main')
+        assert video['codec']=='hevc' and video['container']=='fmp4' and video['framerate']==25
+        assert service.live_audio_capabilities(cams['ch1'],'main')['supported'] is True
+        assert run.call_count==1
+        run.return_value.stdout=b'{"streams":[{"codec_type":"video","codec_name":"h264"}]}'
+        assert service.live_video_capabilities(cams['ch1'],'sub')['codec']=='h264'
+        assert service.live_video_capabilities(cams['ch2'],'main')['codec']=='h264'
+        assert run.call_count==3
+        cams['ch1']['rtsp_port']=8554
+        assert service.live_video_capabilities(cams['ch1'],'main')['codec']=='h264'
+        assert run.call_count==4
+    assert '-rw_timeout' not in run.call_args.args[0]
+
+
+@pytest.mark.parametrize('codec',['h265x','mpeg4','',None])
+def test_unknown_video_codec_never_guesses_from_camera_identity(app_media,monkeypatch,codec):
+    app,service,_,cams=app_media
+    monkeypatch.setattr(service,'live_stream_probe',lambda *args,**kw:{'streams':[{'codec_type':'video','codec_name':codec}]})
+    with app.test_request_context():
+        result=service.live_video_capabilities(cams['ch1'])
+    assert result['codec']=='unknown' and result['codec_string'] is None
+
+
+def test_parallel_metadata_requests_share_the_same_inflight_rtsp_probe(app_media,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    app,service,_,cams=app_media
+    started=threading.Event();resume=threading.Event()
+    def probe(*args,**kw):
+        started.set();assert resume.wait(3)
+        return SimpleNamespace(returncode=0,stdout=b'{"streams":[{"codec_type":"video","codec_name":"hevc"}]}')
+    run=Mock(side_effect=probe)
+    monkeypatch.setattr(media.shutil,'which',lambda name:'test-'+name)
+    monkeypatch.setattr(media.subprocess,'run',run)
+    def query():
+        with app.test_request_context():return service.live_video_capabilities(cams['ch1'])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one=pool.submit(query);assert started.wait(2);two=pool.submit(query)
+        resume.set()
+        assert one.result()['codec']==two.result()['codec']=='hevc'
+    assert run.call_count==1 and not service.live_probe_pending
+
+
+def test_probe_capacity_exhaustion_never_starts_an_extra_process(app_media,monkeypatch):
+    app,service,_,cams=app_media
+    monkeypatch.setattr(media.shutil,'which',lambda name:'test-'+name)
+    service.live_audio_probe_slots=threading.BoundedSemaphore(1)
+    service.live_audio_probe_slots.acquire()
+    run=Mock();monkeypatch.setattr(media.subprocess,'run',run)
+    with app.test_request_context():result=service.live_video_capabilities(cams['ch1'])
+    assert result['codec']=='unknown' and 'занята' in result['reason']
+    run.assert_not_called();assert not service.live_probe_pending
+
+
+@pytest.mark.parametrize('probe_state',['missing','failed','timeout'])
+def test_only_a_missing_ffprobe_tool_permits_unverified_legacy_ts(app_media,monkeypatch,probe_state):
+    app,_,_,_=app_media
+    monkeypatch.setattr(media.shutil,'which',lambda name:None if name=='ffprobe' and probe_state=='missing' else 'test-'+name)
+    run=Mock(return_value=SimpleNamespace(returncode=1,stdout=b''))
+    if probe_state=='timeout':run.side_effect=media.subprocess.TimeoutExpired('synthetic-command',8)
+    monkeypatch.setattr(media.subprocess,'run',run)
+    response=app.test_client().get('/api/live/capabilities?cam_id=ch1&stream=sub')
+    assert response.status_code==200 and response.json['hevc_support'] is False
+    video=response.json['live_video']
+    assert video['codec']=='unknown' and video['stream']=='sub'
+    assert video['legacy_ts_allowed'] is (probe_state=='missing')
+    if probe_state=='missing':
+        assert video['reason_code']=='ffprobe_unavailable';run.assert_not_called()
+    else:assert video['reason_code']!='ffprobe_unavailable'
+
+
+@pytest.mark.parametrize('path',[
+    '/api/live/capabilities?cam_id=ch2',
+    '/live/ch2/main/init.mp4?container=fmp4',
+    '/live/ch2/main/seg_000001.m4s?container=fmp4'])
+def test_hevc_routes_do_not_bypass_visibility(app_media,path):
+    app,_,state,_=app_media;state['visible']={'ch1'}
+    assert app.test_client().get(path).status_code==403
+
+
+def test_fmp4_requires_actual_hevc_confirmation_before_starting_stream(app_media,monkeypatch):
+    app,service,_,_=app_media
+    monkeypatch.setattr(service,'live_video_capabilities',lambda *args:{'codec':'unknown'})
+    ensure=Mock();monkeypatch.setattr(service.live,'ensure',ensure)
+    response=app.test_client().get('/live/ch1/main/index.m3u8?container=fmp4')
+    assert response.status_code==409
+    ensure.assert_not_called()
+
+
+def test_fmp4_manifest_and_init_segments_keep_container_and_tab_lease(app_media,monkeypatch):
+    app,service,_,_=app_media
+    directory=service.live.root/'fmp4-test';directory.mkdir()
+    (directory/'index.m3u8').write_text('#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:2,\nseg_000001.m4s\n')
+    (directory/'init.mp4').write_bytes(b'synthetic init');(directory/'seg_000001.m4s').write_bytes(b'synthetic fragment')
+    process=Mock();process.poll.return_value=None
+    item={'process':process,'directory':directory,'leases':{}}
+    def ensure(cam,stream,owner,container):
+        item['leases'][owner]=time.monotonic();service.live.streams[(cam,stream,container)]=item;return item
+    monkeypatch.setattr(service.live,'ensure',ensure)
+    monkeypatch.setattr(service,'live_video_capabilities',lambda *args:{'codec':'hevc'})
+    client=app.test_client();consumer='c'*32
+    response=client.get('/live/ch1/main/index.m3u8?container=fmp4&consumer='+consumer)
+    text=response.get_data(as_text=True)
+    assert response.status_code==200 and 'init.mp4?consumer='+consumer+'&container=fmp4' in text
+    assert 'seg_000001.m4s?consumer='+consumer+'&container=fmp4' in text
+    assert client.get('/live/ch1/main/init.mp4?consumer='+consumer+'&container=fmp4').mimetype=='video/mp4'
+    assert client.get('/live/ch1/main/seg_000001.m4s?consumer='+consumer+'&container=fmp4').mimetype=='video/iso.segment'
+    assert client.get('/live/ch1/main/seg_000001.m4s?consumer='+consumer).status_code==404
+    assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','container':'ts','consumer':consumer}).status_code==200
+    assert ('ch1','main','fmp4') in service.live.streams
+    assert client.post('/api/live/stop',json={'cam_id':'ch1','stream':'main','container':'fmp4','consumer':consumer}).status_code==200
+    assert not service.live.streams
+
+
+def test_live_container_copy_command_and_stop_all_variants(app_media,monkeypatch):
+    app,service,_,_=app_media
+    proc=Mock();proc.poll.return_value=None
+    launch=Mock(return_value=proc)
+    monkeypatch.setattr(media.shutil,'which',lambda name:'test-'+name)
+    monkeypatch.setattr(media.subprocess,'Popen',launch)
+    with app.test_request_context():
+        service.live.ensure('ch1','main','operator:one','fmp4')
+        command=launch.call_args.args[0]
+        assert command[command.index('-c:v')+1]=='copy' and command[command.index('-hls_segment_type')+1]=='fmp4'
+        assert '-rw_timeout' not in command and '-c:a' not in command
+        service.live.ensure('ch1','main','operator:two','ts')
+        command=launch.call_args.args[0]
+        assert '-hls_segment_type' not in command and command[command.index('-c:v')+1]=='copy'
+    assert set(service.live.streams)=={('ch1','main','fmp4'),('ch1','main','ts')}
+    service.live.stop('ch1','main')
+    assert not service.live.streams
+
+
+def test_hevc_rfc6381_comes_from_profile_tier_level_not_a_generic_guess():
+    hvcc=bytes([1,1,0x60,0,0,0,0xb0,0,0,0,0,0,93])
+    dump='\n00000000: '+hvcc.hex(' ')+ '  synthetic'
+    assert media.hevc_codec_string(dump)=='hvc1.1.6.L93.B0'
+    assert media.hevc_codec_string('not extradata') is None
+
+
+def test_reaper_accounts_for_container_and_keeps_another_active_variant(app_media):
+    _,service,_,_=app_media
+    manager=media.LiveManager(service.live.root/'isolated-reaper')
+    processes=[]
+    for container,age in [('ts',0),('fmp4',40)]:
+        directory=manager.root/container;directory.mkdir()
+        process=Mock();process.poll.return_value=None;processes.append(process)
+        manager.streams[('ch1','sub',container)]={'process':process,'directory':directory,'leases':{'operator:tab':time.monotonic()-age}}
+    manager.stop_event=SimpleNamespace(wait=Mock(side_effect=[False,True]))
+    manager.reap()
+    assert set(manager.streams)=={('ch1','sub','ts')}
+    processes[1].terminate.assert_called_once();processes[0].terminate.assert_not_called()
+    manager.stop_all();assert not manager.streams
+
+
+def test_permission_revocation_stops_every_container_of_the_source(app_media):
+    _,service,state,_=app_media
+    for container in ['ts','fmp4']:
+        directory=service.live.root/('revoke-'+container);directory.mkdir()
+        process=Mock();process.poll.return_value=None
+        service.live.streams[('ch1','main',container)]={'process':process,'directory':directory,'leases':{'operator:tab':time.monotonic()}}
+    state['visible']=set()
+    service.reconcile_permissions()
+    assert not service.live.streams
+
+
+def test_live_audio_missing_probe_and_timeouts_do_not_claim_support(app_media,monkeypatch):
+    app,service,_,cameras=app_media
+    monkeypatch.setattr(media.shutil,'which',lambda _:None)
+    with app.test_request_context():
+        assert service.live_audio_capabilities(cameras['ch1'])['supported'] is False
+    monkeypatch.setattr(media.shutil,'which',lambda _:'ffprobe')
+    monkeypatch.setattr(media.subprocess,'run',Mock(side_effect=media.subprocess.TimeoutExpired('redacted-command',8)))
+    with app.test_request_context():
+        assert service.live_audio_capabilities(cameras['ch1'])['supported'] is False
+
+
+def test_live_audio_routes_enforce_visibility_and_positive_confirmation(app_media,monkeypatch):
+    app,service,state,_=app_media
+    state['visible']={'ch1'}
+    probe=Mock(return_value={'supported':False,'reason':'No live audio'})
+    monkeypatch.setattr(service,'live_audio_capabilities',probe)
+    assert app.test_client().get('/api/live/audio/capabilities?cam_id=ch2').status_code==403
+    assert app.test_client().get('/live/ch2/audio-main/index.m3u8').status_code==403
+    probe.assert_not_called()
+    assert app.test_client().get('/live/ch1/audio-main/index.m3u8').status_code==409
+    assert not service.live.streams
+
+
+def test_audio_hls_uses_audio_only_aac_and_correct_selected_profile(app_media,monkeypatch):
+    app,service,_,_=app_media
+    proc=Mock();proc.poll.return_value=None
+    launch=Mock(return_value=proc)
+    monkeypatch.setattr(media.shutil,'which',lambda _:'ffmpeg')
+    monkeypatch.setattr(media.subprocess,'Popen',launch)
+    with app.test_request_context():
+        service.live.ensure('ch1','audio-main','operator:audio-test')
+    command=launch.call_args.args[0]
+    assert command[command.index('-map')+1]=='0:a:0'
+    assert command[command.index('-c:a')+1]=='aac' and '-vn' in command and '-an' not in command
+    assert 'stream=0.sdp' in command[command.index('-i')+1]
+    service.live.release('ch1','audio-main','operator:audio-test')
+    assert not service.live.streams
+
+
+def test_new_audio_consumer_releases_previous_audio_lease_only(app_media,monkeypatch):
+    app,service,_,_=app_media
+    owner='operator:'+'a'*32
+    process=Mock();process.poll.return_value=None
+    directory=service.live.root/'audio-owner-test';directory.mkdir()
+    (directory/'index.m3u8').write_text('#EXTM3U\n#EXTINF:2,\nseg_000001.ts\n')
+    old={'process':process,'directory':directory,'leases':{owner:time.monotonic(),'operator:another-tab':time.monotonic()}}
+    service.live.streams[('ch1','audio-main','ts')]=old
+    monkeypatch.setattr(service,'live_audio_capabilities',lambda *args,**kwargs:{'supported':True})
+    new_directory=service.live.root/'new-audio-test';new_directory.mkdir()
+    (new_directory/'index.m3u8').write_text('#EXTM3U\n#EXTINF:2,\nseg_000001.ts\n')
+    monkeypatch.setattr(service.live,'ensure',lambda *args:{'process':process,'directory':new_directory,'leases':{}})
+    response=app.test_client().get('/live/ch2/audio-sub/index.m3u8?consumer='+'a'*32)
+    assert response.status_code==200
+    assert owner not in old['leases'] and 'operator:another-tab' in old['leases']
+
+
+def test_live_audio_revocation_stops_sole_consumer(app_media):
+    app,service,state,_=app_media
+    process=Mock();process.poll.return_value=None
+    directory=service.live.root/'revoked-audio-test';directory.mkdir()
+    service.live.streams[('ch1','audio-main','ts')]={'process':process,'directory':directory,'leases':{'operator:tab':time.monotonic()}}
+    state['visible']=set()
+    service.reconcile_permissions()
+    assert not service.live.streams
+    process.terminate.assert_called_once()
+
+
+def test_audio_live_permission_cannot_be_replaced_by_archive_permission(app_media,monkeypatch):
+    app,service,_,_=app_media
+    rt=app.extensions['vwshub']
+    rt.current_user=lambda:{'role':'viewer','username':'operator','permissions':{'live':False,'archive_view':True}}
+    probe=Mock();monkeypatch.setattr(service,'live_audio_capabilities',probe)
+    for path in ['/api/live/audio/capabilities?cam_id=ch1','/live/ch1/audio-main/index.m3u8']:
+        assert app.test_client().get(path).status_code==403
+    probe.assert_not_called()
+
+
+def test_unknown_export_format_is_rejected_before_contacting_recorder(app_media,monkeypatch):
+    app,service,_,_=app_media
+    resolve=Mock();monkeypatch.setattr(service,'resolve',resolve)
+    response=app.test_client().get('/api/download?cam_id=ch1&format=h265x&start=2026-10-29&end=2026-10-30')
+    assert response.status_code==400 and 'H265X' in response.json['error']
+    resolve.assert_not_called()
+
+
+def test_concurrent_audio_requests_retain_one_stream_per_consumer(app_media,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    app,service,_,_=app_media
+    barrier=threading.Barrier(2)
+    def probe(*args,**kwargs):barrier.wait(timeout=3);return {'supported':True}
+    monkeypatch.setattr(service,'live_audio_capabilities',probe)
+    class Proc:
+        code=None
+        def poll(self):return self.code
+        def terminate(self):self.code=-15
+        def wait(self,timeout=None):return self.code
+    def ensure(cam_id,stream,owner,container="ts"):
+        directory=service.live.root/(cam_id+'-concurrent');directory.mkdir(exist_ok=True)
+        (directory/'index.m3u8').write_text('#EXTM3U\n#EXTINF:2,\nseg_000001.ts\n')
+        item={'process':Proc(),'directory':directory,'leases':{owner:time.monotonic()}}
+        service.live.streams[(cam_id,stream,container)]=item
+        return item
+    monkeypatch.setattr(service.live,'ensure',ensure)
+    def run(cam_id):return app.test_client().get('/live/'+cam_id+'/audio-main/index.m3u8?consumer='+'b'*32).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:statuses=list(pool.map(run,['ch1','ch2']))
+    assert all(code in {200,503} for code in statuses)
+    assert len(service.live.streams)==1
+    assert len(next(iter(service.live.streams.values()))['leases'])==1
+
+
+@pytest.mark.parametrize('body',[[],{'cam_id':'ch1','stream':['audio-main']},{'cam_id':'ch1','stream':'audio-unknown'},{'cam_id':'ch1','consumer':{'nested':'bad'}}])
+def test_stop_audio_rejects_malformed_payload_without_touching_streams(app_media,monkeypatch,body):
+    app,service,_,_=app_media
+    release=Mock();monkeypatch.setattr(service.live,'release',release)
+    assert app.test_client().post('/api/live/stop',json=body).status_code==400
+    release.assert_not_called()
+
+
+def test_audio_playlist_rejects_unknown_profile_and_bad_consumer(app_media):
+    app,_,_,_=app_media
+    assert app.test_client().get('/live/ch1/audio-unknown/index.m3u8').status_code==400
+    assert app.test_client().get('/live/ch1/audio-main/index.m3u8?consumer=bad').status_code==400

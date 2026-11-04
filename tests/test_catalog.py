@@ -100,6 +100,10 @@ def test_status_retries_control_port_then_reports_rtsp_evidence(owner,catalog,mo
     probe=Mock(side_effect=[TimeoutError(),ConnectionRefusedError(),connection]);monkeypatch.setattr("hub.catalog.socket.create_connection",probe)
     result=owner.post("/api/cameras/status",json={"camera_ids":["cam_a"]}).json["status"]["cam_a"]
     assert result["online"] is True and result["method"]=="rtsp" and result["port"]==554
+    assert result["overall"]=="partial"
+    assert result["services"]["management"]["state"]=="unverified"
+    assert result["services"]["live"]["state"]=="unverified"
+    assert result["services"]["archive"]["state"]=="unverified"
     assert [call.args[0][1] for call in probe.call_args_list]==[34567,34567,554]
 
 
@@ -201,3 +205,47 @@ def test_hardware_diagnostics_redacts_secrets_and_admin_can_clear(owner,catalog)
     settings=catalog.store.get_settings();settings["diagnostics"]["enabled"]=False;catalog.store.save_settings(settings)
     catalog.hardware.record("disabled",catalog.get_camera("cam_a"))
     assert catalog.hardware.entries()==[]
+
+
+def test_audio_only_hls_is_not_evidence_of_video_on_other_channels(app,owner,catalog,monkeypatch):
+    import threading
+    from types import SimpleNamespace as NS
+    first=catalog.get_camera("cam_a")
+    second=dict(first,id="cam_other",channel=1)
+    catalog.store.save_devices([first,second])
+    folder=catalog.store.base_dir/"synthetic-hls";folder.mkdir()
+    (folder/"index.m3u8").write_text("#EXTM3U\n#EXTINF:2,\nseg.ts\n")
+    process=Mock();process.poll.return_value=None
+    app.extensions["vwshub_media"]=NS(live=NS(lock=threading.RLock(),streams={(first["id"],"main"):{"directory":folder,"process":process},(second["id"],"audio-main"):{"directory":folder,"process":process}}))
+    probe=Mock();monkeypatch.setattr("hub.catalog.socket.create_connection",probe)
+    result=owner.post("/api/cameras/status",json={}).json["status"]
+    assert result[first["id"]]["services"]["live"]["state"]=="confirmed"
+    assert result[second["id"]]["services"]["live"]["state"]=="unverified"
+    probe.assert_not_called()
+
+
+def test_recent_archive_audio_evidence_is_scoped_to_channel_and_profile(app,owner,catalog,monkeypatch):
+    import time
+    from hub.store import DataStore
+    first=catalog.get_camera("cam_a");second=dict(first,id="other",channel=1)
+    catalog.store.save_devices([first,second])
+    catalog.device_health={DataStore.connection_key(first):{"archive_sources":{first["id"]:time.monotonic()},"live_audio_sources":{first["id"]+"|main":{"checked":time.monotonic(),"supported":True}}}}
+    connection=Mock();connection.__enter__=Mock();connection.__exit__=Mock(return_value=False)
+    monkeypatch.setattr("hub.catalog.socket.create_connection",Mock(return_value=connection))
+    result=owner.post("/api/cameras/status",json={}).json["status"]
+    assert result[first["id"]]["services"]["archive"]["state"]=="confirmed"
+    assert result["other"]["services"]["archive"]["state"]=="unverified"
+    audio=result[first["id"]]["services"]["audio"]
+    assert audio["profiles"]=={"main":"supported","sub":"unverified"}
+    assert audio["archive_audio"]=="unverified"
+    assert result["other"]["services"]["audio"]["state"]=="unverified"
+
+
+def test_no_evidence_is_not_confirmed_soon_after_system_boot(owner,catalog,monkeypatch):
+    monkeypatch.setattr("hub.catalog.time.monotonic",lambda:10)
+    connection=Mock();connection.__enter__=Mock();connection.__exit__=Mock(return_value=False)
+    monkeypatch.setattr("hub.catalog.socket.create_connection",Mock(return_value=connection))
+    row=owner.post("/api/cameras/status",json={"camera_ids":["cam_a"]}).json["status"]["cam_a"]
+    assert row["overall"]=="partial"
+    assert row["services"]["management"]["state"]=="unverified"
+    assert row["services"]["archive"]["state"]=="unverified"
