@@ -1651,6 +1651,20 @@ body[data-view="archive"] .main-content {
 .arc-viewer:is([data-player-state="gap"],[data-player-state="empty"],[data-player-state="unsupported"]) .arc-state-card > svg { color: var(--warning-text, var(--warning)); }
 .arc-state-card button { border-style: solid; border-width: 1px; }
 
+/* Keep every export action readable on the narrowest supported screens. */
+@media (max-width: 380px) {
+  .arc-export-bar { grid-template-columns: minmax(0, 1fr) auto auto; }
+  #arc-select-mode { grid-column: 1; grid-row: 1; justify-self: start; }
+  .arc-export-actions { display: contents; }
+  #arc-precise { grid-column: 2; grid-row: 1; }
+  #arc-clear-selection { grid-column: 3; grid-row: 1; }
+  #arc-export { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+  .arc-export-copy { grid-row: 3; }
+  .arc-selection-fields { grid-row: 4; }
+  .arc-transport #arc-timeline-style { width: 94px; padding-inline: 7px 26px; }
+  #arc-time-fit { padding-inline: 4px; }
+}
+
 /* The numeric transport controls keep LTR even inside the RTL workspace. */
 html[dir=rtl] .arc-player-controls select {
   direction:ltr;
