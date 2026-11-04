@@ -116,6 +116,9 @@ async function audit(page, testInfo, name) {
         .map(img => ({ src: img.getAttribute('src'), id: img.id })),
       unlabelledButtons: Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(el => !label(el))
         .map(el => el.outerHTML.slice(0, 500)),
+      clippedArchiveActions: Array.from(document.querySelectorAll('.arc-export-actions button')).filter(visible)
+        .filter(el => { const r = el.getBoundingClientRect(); return r.left < -1 || r.right > window.innerWidth + 1; })
+        .map(el => el.id),
       dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible).map(el => {
         const r = el.getBoundingClientRect();
         return { left: r.left, right: r.right, width: r.width };
@@ -126,6 +129,7 @@ async function audit(page, testInfo, name) {
   expect(issues.overflow.actual, 'Document horizontal overflow').toBeLessThanOrEqual(issues.overflow.viewport + 1);
   expect(issues.brokenImages, 'Broken images').toEqual([]);
   expect(issues.unlabelledButtons, 'Visible buttons without a meaningful accessible label').toEqual([]);
+  expect(issues.clippedArchiveActions, 'Archive export actions clipped by the viewport').toEqual([]);
   for (const dialog of issues.dialogs) {
     expect(dialog.left, 'Dialog left edge').toBeGreaterThanOrEqual(-1);
     expect(dialog.right, 'Dialog right edge').toBeLessThanOrEqual(issues.overflow.viewport + 1);
