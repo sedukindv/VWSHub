@@ -87,7 +87,7 @@ jobs:
           retention-days: 14
 
   browser-visual-review:
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'release-')
+    if: (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[visual review]')) && startsWith(github.ref_name, 'release-')
     needs: [regression, browser-functional]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
