@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from .store import protected
 
@@ -36,8 +36,16 @@ class HardwareJournal:
             if not self.store.get_settings().get("diagnostics", {}).get("enabled", True):
                 return
             device = {k: camera[k] for k in ("id", "recorder_id", "protocol", "ip", "port", "channel") if camera and k in camera}
+            now = datetime.now(timezone.utc)
+            duration = details.get("duration_ms")
+            if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration <= 86_400_000:
+                details.setdefault("started_at", (now - timedelta(milliseconds=duration)).isoformat(timespec="milliseconds"))
+            details.setdefault("stage", str(event).split(".")[-1])
+            stage = str(event).split(".")[-1]
+            outcome = "cancelled" if details.get("cancelled") is True else "failed" if level == "error" or stage in {"failed", "unreachable", "rejected"} else "started" if stage in {"open", "start", "requested"} else "completed"
+            details.setdefault("result", outcome)
             entry = {
-                "time": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "time": now.isoformat(timespec="milliseconds"),
                 "level": level if level in {"info", "warning", "error"} else "info",
                 "event": str(event)[:100], "device": scrub(device), "detail": scrub(details),
             }

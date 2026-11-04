@@ -20,6 +20,7 @@ import socket
 import struct
 
 from flask import jsonify, request
+from .failures import failure_details
 
 
 def site_device_name(runtime,cam):
@@ -81,12 +82,78 @@ def check_dvr_reply(reply):
     return reply
 
 
+def verified_write(expected, observed=None):
+    """A successful SOAP setter is an acknowledgement, not persistence proof."""
+    available=isinstance(observed,dict)
+    saved=available and all(key in observed and not (isinstance(value,(int,float)) and isinstance(observed[key],bool)) and observed[key]==value for key,value in expected.items())
+    return dict(accepted=True,saved=bool(saved),verification_pending=not saved,readback_available=available,
+                message="Изменения подтверждены повторным чтением устройства" if saved else "Устройство приняло команду, но повторное чтение не подтвердило изменения. Проверьте настройки в фирменном интерфейсе.")
+
+
+
+def ntp_host(address):
+    """ONVIF tt:NetworkHost (installed official devicemgmt.wsdl/onvif.xsd)."""
+    if not isinstance(address,str) or not address or len(address)>253 or address!=address.strip() or "%" in address:
+        raise ValueError("NTP-сервер: укажите IP-адрес или DNS-имя")
+    try:
+        ip=ipaddress.ip_address(address)
+        return {"Type":"IPv4" if ip.version==4 else "IPv6", "IPv4Address" if ip.version==4 else "IPv6Address":str(ip)}
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?",address):
+            raise ValueError("NTP-сервер: DNS-имя без протокола, порта и пути") from None
+        return {"Type":"DNS","DNSname":address.lower().rstrip(".")}
+
+
+def ntp_address(host):
+    kind=field(host,"Type")
+    if not isinstance(kind,str):return None
+    key={"IPv4":"IPv4Address","IPv6":"IPv6Address","DNS":"DNSname"}.get(kind)
+    if not key or not isinstance(field(host,key),str):return None
+    try:
+        normalized=ntp_host(field(host,key))
+        return next(v for k,v in normalized.items() if k!="Type") if normalized["Type"]==kind else None
+    except ValueError:return None
+
+
+def read_onvif_ntp(device):
+    method=getattr(device,"GetNTP",None)
+    if not callable(method):raise NotImplementedError("Устройство не предоставляет GetNTP")
+    try:raw=method()
+    except Exception as exc:
+        code=(str(getattr(exc,"code",""))+" "+str(exc)).lower()
+        if any(v in code for v in ("actionnotsupported","optionalactionnotimplemented","notimplemented","not supported")):
+            raise NotImplementedError("Устройство не поддерживает ONVIF NTP") from None
+        raise
+    if not isinstance(field(raw,"FromDHCP"),bool):raise NotImplementedError("Устройство не подтвердило формат ONVIF NTP")
+    hosts=field(raw,"NTPManual",[]) or []
+    if not isinstance(hosts,(list,tuple)) or len(hosts)>256:raise NotImplementedError("Неподдержанный список NTP-серверов")
+    servers=[ntp_address(v) for v in hosts]
+    maximum=None
+    try:
+        caps=device.GetServiceCapabilities()
+        count=field(field(field(caps,"Capabilities",caps),"Network"),"NTP")
+        if type(count) is int and 0<=count<=256:maximum=count
+    except Exception:pass
+    clock=None;mode=None
+    try:
+        clock=device.GetSystemDateAndTime();mode=field(clock,"DateTimeType")
+        if not isinstance(mode,str) or mode not in {"NTP","Manual"}:mode=None
+    except Exception:pass
+    writable=bool(maximum and len(hosts)<=maximum and all(v is not None for v in servers) and callable(getattr(device,"SetNTP",None)))
+    return raw,clock,dict(from_dhcp=field(raw,"FromDHCP"),servers=[v for v in servers if v is not None],
+        dhcp_servers=[v for item in (field(raw,"NTPFromDHCP",[]) or []) if (v:=ntp_address(item)) is not None],
+        max_servers=maximum,writable=writable,enabled=mode=="NTP" if mode else None,
+        mode_writable=writable and mode is not None and isinstance(field(clock,"DaylightSavings"),bool) and callable(getattr(device,"SetSystemDateAndTime",None)),
+        revision=_revision({"ntp":plain(raw),"mode":mode,"maximum":maximum}),
+        note="ONVIF задаёт серверы и источник DHCP; нестандартные порт и интервал не изменяются" if writable else "Редактирование NTP не подтверждено возможностями устройства")
+
+
 def register_devices(app, runtime):
     current_user, get_camera = runtime.current_user, runtime.get_camera
     onvif_connect = lambda cam: connect_onvif(runtime, cam)
     dvr_connect = lambda cam: connect_dvr(runtime, cam)
     logger = logging.getLogger("vwshub.devices")
-    clients, device_locks = {}, {}
+    clients, device_locks, reboot_pending = {}, {}, {}
     cache_lock = threading.RLock()
 
     def endpoint(fn):
@@ -115,19 +182,29 @@ def register_devices(app, runtime):
                     device_lock = device_locks.setdefault(physical_key, threading.RLock())
                 with device_lock:
                     result=fn(cam,data)
+                    if not isinstance(result,tuple):
+                        from .store import DataStore
+                        if not hasattr(runtime,"device_health"):runtime.device_health={}
+                        runtime.device_health.setdefault(DataStore.connection_key(cam),{})["management_checked"]=0 if data.get("action")=="reboot" else time.monotonic()
                     if journal: journal.record("device.operation", cam, operation=fn.__name__, duration_ms=round((time.monotonic()-began)*1000))
                     if isinstance(result,tuple):return jsonify(result[0]),result[1]
                     return jsonify(success=True, **result)
             except ValueError as exc:
-                if journal: journal.record("device.rejected", cam, level="warning", operation=fn.__name__, error_type=type(exc).__name__)
+                if journal: journal.record("device.rejected", cam, level="warning", operation=fn.__name__, stage=fn.__name__, error_type=type(exc).__name__, duration_ms=round((time.monotonic()-began)*1000))
                 return jsonify(error=str(exc)), 400
             except NotImplementedError as exc:
-                return jsonify(error=str(exc)), 501
+                if journal:journal.record("device.unsupported",cam,operation=fn.__name__,stage=fn.__name__,result="unsupported",duration_ms=round((time.monotonic()-began)*1000))
+                return jsonify(error=str(exc),error_code="unsupported",stage=fn.__name__), 501
             except Exception as exc:
-                if journal: journal.record("device.failed", cam, level="error", operation=fn.__name__, error_type=type(exc).__name__, duration_ms=round((time.monotonic()-began)*1000))
+                if journal: journal.record("device.failed", cam, level="error", operation=fn.__name__, stage=fn.__name__, **failure_details(exc), duration_ms=round((time.monotonic()-began)*1000))
                 # SOAP/FFmpeg errors can contain entire credential-bearing URLs.
                 logger.warning("Device operation %s failed on %s (%s)", fn.__name__, cam.get("id"), type(exc).__name__)
-                return jsonify(error="Устройство не выполнило операцию. Проверьте подключение, права и поддержку функции."), 502
+                details=failure_details(exc)
+                if details["error_code"] in {"timeout","authentication","connection"}:
+                    from .store import DataStore
+                    if hasattr(runtime,"device_health"):
+                        runtime.device_health.setdefault(DataStore.connection_key(cam),{})["management_checked"]=0
+                return jsonify(error=details["description"],error_code=details["error_code"],stage=fn.__name__), 504 if details["error_code"]=="timeout" else 502
         return wrapped
 
     def client_for(cam):
@@ -189,9 +266,13 @@ def register_devices(app, runtime):
             has_ptz = has_ptz or ptz_supported
             has_source = has_source or bool(field(source, "SourceToken"))
             has_encoder = has_encoder or bool(field(encoder, "token"))
+        ntp_read=ntp_edit=False
+        try:
+            _,_,ntp=read_onvif_ntp(device);ntp_read=True;ntp_edit=ntp["writable"]
+        except Exception:pass
         return dict(protocol="onvif", profiles=result,
                     capabilities=dict(info=True, ptz=has_ptz, imaging=has_source and field(caps, "Imaging") is not None,
-                                      encoder=has_encoder, reboot=True, time=True, network=True),
+                                      encoder=has_encoder, reboot=True, time=True, network=True,ntp_read=ntp_read,ntp=ntp_edit),
                     notes=["Наличие ONVIF-службы не гарантирует поддержку каждой команды: доступные диапазоны запрашиваются у устройства. Сеть читается без изменения IP."])
 
     @app.post("/api/device/ptz", endpoint="dev_api_device_ptz")
@@ -271,8 +352,12 @@ def register_devices(app, runtime):
                     raise ValueError(f"Устройство не поддерживает параметр {key}")
                 validated[key] = number(value, key, field(option, "Min"), field(option, "Max"))
             service.SetImagingSettings({"VideoSourceToken": source, "ImagingSettings": validated, "ForcePersistence": True})
-        current = service.GetImagingSettings({"VideoSourceToken": source})
-        return dict(settings={key: plain(field(current, key)) for key in supported}, options=supported)
+        try:current = service.GetImagingSettings({"VideoSourceToken": source})
+        except Exception:
+            if settings is None:raise
+            return dict(settings={},options=supported,**verified_write(validated))
+        observed={key: plain(field(current, key)) for key in supported}
+        return dict(settings=observed, options=supported,**(verified_write(validated,observed) if settings is not None else {}))
 
     @app.post("/api/device/encoder", endpoint="dev_api_device_encoder")
     @endpoint
@@ -300,6 +385,7 @@ def register_devices(app, runtime):
         public_options = dict(resolutions=[dict(width=field(r, "Width"), height=field(r, "Height")) for r in resolutions],
                               fps=plain(field(codec, "FrameRateRange")), bitrate=plain(bitrate_range),
                               quality=plain(field(options, "QualityRange")))
+        expected={}
         if settings is not None:
             if "width" in settings or "height" in settings:
                 if not {"width", "height"} <= set(settings):
@@ -309,6 +395,7 @@ def register_devices(app, runtime):
                 if not any(field(r, "Width") == width and field(r, "Height") == height for r in resolutions):
                     raise ValueError("Разрешение не поддерживается текущим кодеком")
                 config.Resolution.Width, config.Resolution.Height = width, height
+                expected.update(width=width,height=height)
             for key, path, option in (("quality", "Quality", field(options, "QualityRange")),
                                        ("fps", "FrameRateLimit", field(codec, "FrameRateRange")),
                                        ("bitrate", "BitrateLimit", bitrate_range)):
@@ -317,6 +404,7 @@ def register_devices(app, runtime):
                 if option is None:
                     raise ValueError(f"Устройство не сообщает допустимый диапазон {key}")
                 validated = number(settings[key], key, field(option, "Min"), field(option, "Max"), key != "quality")
+                expected[key]=validated
                 if key == "quality":
                     config.Quality = validated
                 else:
@@ -324,11 +412,13 @@ def register_devices(app, runtime):
                         raise NotImplementedError("Устройство не предоставляет управление частотой/битрейтом")
                     setattr(config.RateControl, path, validated)
             media.SetVideoEncoderConfiguration({"Configuration": config, "ForcePersistence": True})
-            config = media.GetVideoEncoderConfiguration({"ConfigurationToken": enc_token})
+            try:config = media.GetVideoEncoderConfiguration({"ConfigurationToken": enc_token})
+            except Exception:return dict(settings={},options=public_options,**verified_write(expected))
         resolution, rate = field(config, "Resolution"), field(config, "RateControl")
-        return dict(settings=dict(width=field(resolution, "Width"), height=field(resolution, "Height"),
+        observed=dict(width=field(resolution, "Width"), height=field(resolution, "Height"),
                                   fps=field(rate, "FrameRateLimit"), bitrate=field(rate, "BitrateLimit"),
-                                  quality=field(config, "Quality"), encoding=encoding), options=public_options)
+                                  quality=field(config, "Quality"), encoding=encoding)
+        return dict(settings=observed, options=public_options,**(verified_write(expected,observed) if settings is not None else {}))
 
     @app.post("/api/device/system", endpoint="dev_api_device_system")
     @endpoint
@@ -339,6 +429,11 @@ def register_devices(app, runtime):
         # Reboot requires an explicit intent flag, preventing accidental form submits.
         if action == "reboot" and data.get("confirm") is not True:
             raise ValueError("Подтвердите перезагрузку устройства")
+        if action == "reboot" and data.get("device_name") not in (cam.get("name"),site_device_name(runtime,cam)):
+            raise ValueError("Для перезапуска введите точное имя регистратора")
+        physical_key=tuple(str(cam.get(k,"")) for k in ("protocol","ip","port"))
+        if action == "reboot" and reboot_pending.get(physical_key,0)>time.monotonic():
+            return dict(error="Перезапуск уже запрошен. Дождитесь завершения и проверьте доступность устройства.",retry_after=60),409
         utc = datetime.now(timezone.utc)
         if action == "time" and data.get("utc"):
             try:
@@ -352,8 +447,22 @@ def register_devices(app, runtime):
             dvr = dvr_connect(cam)
             try:
                 if action == "reboot":
-                    dvr.reboot()
-                    return dict(message="Команда перезагрузки отправлена")
+                    # Pinned python-dvr reboot() discards the acknowledgement.
+                    # Use its actual command and disconnect wait, preserving the
+                    # connection during the firmware's deferred reboot window.
+                    wait=getattr(dvr,"_wait_for_disconnect",None)
+                    if not callable(wait) or not callable(getattr(dvr,"set_command",None)):
+                        raise NotImplementedError("Адаптер не подтверждает безопасный перезапуск этой версии DVRIP")
+                    reply=dvr.set_command("OPMachine",{"Action":"Reboot"})
+                    check_dvr_reply(reply)
+                    if not isinstance(reply,dict) or reply.get("Ret")!=100:
+                        raise RuntimeError("Регистратор не подтвердил команду перезапуска")
+                    reboot_pending[physical_key]=time.monotonic()+60
+                    from .store import DataStore
+                    if not hasattr(runtime,"device_health"):runtime.device_health={}
+                    runtime.device_health.setdefault(DataStore.connection_key(cam),{})["management_checked"]=0
+                    wait(15)
+                    return dict(accepted=True,verification_required=True,retry_after=60,message="Регистратор принял команду. Дождитесь загрузки и проверьте доступность.")
                 if action == "time":
                     # OPTimeSetting accepts an unzoned LOCAL recorder clock, whereas
                     # ONVIF accepts UTC. Require explicit local time; do not guess a
@@ -364,14 +473,22 @@ def register_devices(app, runtime):
                             raise ValueError()
                     except (TypeError, ValueError):
                         raise ValueError("Для DVRIP укажите местное время регистратора в поле local_time без часового пояса") from None
+                    started=time.monotonic()
                     check_dvr_reply(dvr.set_time(local_time))
-                    return dict(message="Местное время регистратора установлено")
+                    try:
+                        observed=dvr.get_time()
+                        if isinstance(observed,str):observed=datetime.fromisoformat(observed)
+                        verified=isinstance(observed,datetime) and observed.tzinfo is None and abs((observed-local_time).total_seconds()-(time.monotonic()-started))<=5
+                    except Exception:
+                        verified=False
+                    return dict(accepted=True,saved=verified,message="Местное время подтверждено повторным чтением" if verified else "Команда установки времени принята, но повторное чтение не подтвердило результат")
                 notes = []
                 info = check_dvr_reply(dvr.get_system_info())
-                result = dict(system_info=plain(info), time=None, network=None, notes=notes)
+                result = dict(system_info=plain(info), time=None, network=None, notes=notes,services={"network":"confirmed","management":"confirmed","live":"unverified","archive":"unverified","audio":"unverified"})
                 for key, method in (("time", "get_time"), ("network", "get_netcommon")):
                     try:
                         result[key] = plain(check_dvr_reply(getattr(dvr, method)()))
+                        if key=="network":result["network_display"]=network_display(result[key])
                     except Exception:
                         notes.append(f"Устройство не предоставило {key}")
                 return result
@@ -380,15 +497,27 @@ def register_devices(app, runtime):
         client = client_for(cam)
         device = service_for(client, "devicemgmt")
         if action == "reboot":
-            return dict(message=str(device.SystemReboot() or "Команда перезагрузки отправлена"))
+            method=getattr(device,"SystemReboot",None)
+            if not callable(method):raise NotImplementedError("Устройство не предоставляет SystemReboot")
+            reply=method()
+            reboot_pending[physical_key]=time.monotonic()+60
+            return dict(accepted=True,verification_required=True,retry_after=60,message="Регистратор принял команду. Дождитесь загрузки и проверьте доступность.")
         if action == "time":
             current = device.GetSystemDateAndTime()
+            started=time.monotonic()
             device.SetSystemDateAndTime({"DateTimeType": "Manual", "DaylightSavings": bool(field(current, "DaylightSavings", False)),
                                          "TimeZone": field(current, "TimeZone"),
                                          "UTCDateTime": {"Date": {"Year": utc.year, "Month": utc.month, "Day": utc.day},
                                                          "Time": {"Hour": utc.hour, "Minute": utc.minute, "Second": utc.second}}})
-            return dict(message="Время синхронизировано (UTC)")
-        result = dict(system_info=plain(device.GetDeviceInformation()), time=None, network=None, notes=[])
+            try:
+                observed=field(device.GetSystemDateAndTime(),"UTCDateTime")
+                date,clock=field(observed,"Date"),field(observed,"Time")
+                stamp=datetime(int(field(date,"Year")),int(field(date,"Month")),int(field(date,"Day")),int(field(clock,"Hour")),int(field(clock,"Minute")),int(field(clock,"Second")),tzinfo=timezone.utc)
+                verified=abs((stamp-utc).total_seconds()-(time.monotonic()-started))<=5
+            except Exception:
+                verified=False
+            return dict(accepted=True,saved=verified,message="Время UTC подтверждено повторным чтением" if verified else "Команда установки времени принята, но повторное чтение не подтвердило результат")
+        result = dict(system_info=plain(device.GetDeviceInformation()), time=None, network=None, notes=[],services={"network":"confirmed","management":"confirmed","live":"unverified","archive":"unverified","audio":"unverified"})
         try:
             result["time"] = plain(device.GetSystemDateAndTime())
         except Exception:
@@ -459,7 +588,7 @@ LABELS = {
     "AutoRebootHour":"Час перезагрузки","AutoDeleteFilesDays":"Удалять файлы старше, дней","UserName":"Логин канала",
     "Port":"Порт","Protocol":"Протокол","Channel":"Канал","Interval":"Интервал","Delay":"Задержка, с",
     "MachineName":"Имя устройства","SpareAddress":"Резервный DNS","RelativePos":"Положение, 0–8192","Hue":"Оттенок",
-    "UpdatePeriod":"Синхронизация, мин",
+    "UpdatePeriod":"Синхронизация, мин", "RTSPPort":"RTSP-порт", "RtspPort":"RTSP-порт",
 }
 ENUMS = {
     "RecordMode":["ConfigRecord","ManualRecord","ClosedRecord"],
@@ -500,6 +629,16 @@ def _ip_display(value):
     return value
 
 
+
+def network_display(value):
+    """Presentation only: preserve the complete original configuration for patching."""
+    if isinstance(value,list):return [network_display(v) for v in value]
+    if isinstance(value,dict):
+        return {key:network_display(item) if isinstance(item,(dict,list)) else _ip_display(item)
+                for key,item in value.items()}
+    return value
+
+
 def describe_config(value, section, channel=None, ability=None):
     result=[]
     def walk(node,path=(),depth=0):
@@ -516,12 +655,18 @@ def describe_config(value, section, channel=None, ability=None):
                 walk(item,path+(i,),depth+1)
         elif isinstance(node,(str,int,float,bool)) and path:
             key=next((str(p) for p in reversed(path) if isinstance(p,str)),"")
-            network=section in {"network","dhcp","dns","digital"}
+            network=section in {"network","dhcp","dns","digital","ntp"}
             ip=network and (key in {"HostIP","Submask","GateWay","Gateway","Address","IP","IPAddress","PrimaryDNS","SecondaryDNS"} or re.fullmatch(r"0x[0-9a-fA-F]{8}",str(node)) is not None and section=="dns")
             schedule=any(p=="TimeSection" for p in path) and isinstance(node,str) and re.fullmatch(r"\d+ \d\d:\d\d:\d\d-\d\d:\d\d:\d\d",node)
             item={"path":list(path),"key":key,"label":LABELS.get(key,key),"value":_ip_display(node) if ip else node,
                   "type":"ip" if ip else "schedule" if schedule else "boolean" if isinstance(node,bool) else "number" if isinstance(node,(float,int)) else "text",
                   "editable":key not in READ_ONLY and key in LABELS}
+            # Geometry, packed colors and bit masks are not writable through a
+            # guessed text/numeric editor. Keep them in the merged wire object.
+            opaque=key in {"FrontColor","BackColor","Blend","Rect","RelativePos","AlarmMask","DetectMask","RecordMask","TimeZone"} or "Covers" in path
+            item["display"]=key in LABELS and not opaque
+            if opaque:item["editable"]=False
+            if section=="ntp" and key=="Name":item["label"]="NTP-сервер"
             if section=="dhcp" and isinstance(value,list) and isinstance(path[0],int):item["context"]=str(value[path[0]].get("Interface",f"Interface {path[0]+1}"))
             if schedule:item["editable"]=True
             if key in ENUMS and isinstance(node,str):item.update(type="select",options=list(dict.fromkeys([node,*ENUMS[key]])))
@@ -588,6 +733,8 @@ def patch_config(current,section,changes,channel=None,ability=None):
             if isinstance(original,str) and original.startswith("0x"):value=f"0x{int.from_bytes(ipaddress.IPv4Address(value).packed,'little'):08X}"
         else:
             if not isinstance(value,str) or len(value)>255 or any(ord(c)<32 for c in value):raise ValueError("Некорректный текст настройки")
+            if section=="ntp" and descriptor["key"]=="Name" and value and not re.fullmatch(r"(?=.{1,253}\.?$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?",value):
+                raise ValueError("NTP-сервер: укажите IP-адрес или DNS-имя без протокола и порта")
             if descriptor["key"]=="HostName" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}",value):raise ValueError("Сетевое имя: латинские буквы, цифры, точка и дефис")
             if descriptor["key"] in {"BackColor","FrontColor"} and not re.fullmatch(r"0x[0-9A-Fa-f]{8}",value):raise ValueError("Цвет должен содержать 8 шестнадцатеричных цифр после 0x")
             if kind=="schedule":
@@ -612,7 +759,7 @@ def xm_capabilities(dvr,cam):
     except Exception:features={}
     ptz=_has_flag(features,"ptz")
     return dict(protocol="dvrip",system_info=plain(info),profiles=[],
-                capabilities=dict(info=True,ptz=ptz,imaging=False,encoder=False,reboot=callable(getattr(dvr,"reboot",None)),time=True,network=True,config=True,storage=True,users=callable(getattr(dvr,"getUsers",None))),
+                capabilities=dict(info=True,ptz=ptz,imaging=False,encoder=False,reboot=callable(getattr(dvr,"set_command",None)) and callable(getattr(dvr,"_wait_for_disconnect",None)),time=True,network=True,config=True,storage=True,users=callable(getattr(dvr,"getUsers",None))),
                 sections=[dict(id=key,title=spec[0],supported=None) for key,spec in XM_SECTIONS.items()],
                 notes=["Разделы проверяются при открытии. Изменяются только поля, фактически возвращённые выбранным устройством.","DVRIP управляет аналоговыми каналами через регистратор; операция применяется к выбранному каналу или всему устройству, как указано в форме."])
 
@@ -798,8 +945,72 @@ def register_xm_routes(app,runtime,endpoint,dvr_connect,client_for,service_for):
         if cam.get("protocol")!="onvif":raise NotImplementedError("Для XM используйте общие/сетевые настройки")
         name=str(data.get("hostname", ""))
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}",name):raise ValueError("Некорректное сетевое имя")
-        service_for(client_for(cam),"devicemgmt").SetHostname({"Name":name})
-        runtime.audit("device.hostname",f"device={cam['id']}");return dict(message="Сетевое имя изменено")
+        device=service_for(client_for(cam),"devicemgmt")
+        device.SetHostname({"Name":name})
+        runtime.audit("device.hostname",f"device={cam['id']}")
+        try:
+            observed=field(device.GetHostname(),"Name")
+            # DNS host labels are case-insensitive; do not require firmware to
+            # preserve the capitalization used in the request.
+            actual=observed.casefold() if isinstance(observed,str) else observed
+            return dict(hostname=observed,**verified_write({"hostname":name.casefold()},{"hostname":actual}))
+        except Exception:return dict(hostname=None,**verified_write({"hostname":name.casefold()}))
+
+    @app.post("/api/device/onvif/ntp",endpoint="dev_api_device_onvif_ntp")
+    @endpoint
+    def onvif_ntp(cam,data):
+        if cam.get("protocol")!="onvif":raise NotImplementedError("Для XM используйте раздел синхронизации времени")
+        device=service_for(client_for(cam),"devicemgmt")
+        current,clock,state=read_onvif_ntp(device)
+        settings=data.get("settings")
+        if settings is None:return state
+        if not isinstance(settings,dict) or set(settings)-{"from_dhcp","servers","enabled"}:raise ValueError("Неизвестные параметры NTP")
+        if data.get("confirm") is not True:raise ValueError("Подтвердите изменение синхронизации времени")
+        if data.get("revision")!=state["revision"]:return {"error":"Настройки NTP изменились. Обновите форму."},409
+        if not state["writable"]:raise NotImplementedError("Устройство не подтвердило возможность SetNTP")
+        from_dhcp=settings.get("from_dhcp",state["from_dhcp"])
+        if not isinstance(from_dhcp,bool):raise ValueError("NTP DHCP: требуется переключатель")
+        existing=list(field(current,"NTPManual",[]) or [])
+        hosts=copy.deepcopy(existing)
+        if "servers" in settings:
+            servers=settings["servers"]
+            if not isinstance(servers,list) or len(servers)>state["max_servers"]:raise ValueError("Превышен предел NTP-серверов устройства")
+            wanted=[ntp_host(v) for v in servers]
+            addresses=[ntp_address(v) for v in wanted]
+            if len(set(addresses))!=len(addresses):raise ValueError("NTP-серверы не должны повторяться")
+            # Reuse complete unchanged host objects, including vendor Extension.
+            hosts=[copy.deepcopy(next((old for old in existing if ntp_address(old)==ntp_address(new)),new)) for new in wanted]
+        mode_changed="enabled" in settings and settings["enabled"]!=state["enabled"]
+        if "enabled" in settings and not isinstance(settings["enabled"],bool):raise ValueError("NTP: требуется логическое значение enabled")
+        if mode_changed and not state["mode_writable"]:raise NotImplementedError("Режим синхронизации не подтверждён устройством")
+        if settings.get("enabled",state["enabled"]) is True and not from_dhcp and not hosts:raise ValueError("Для ручного NTP укажите хотя бы один сервер")
+        mode_payload=None
+        if mode_changed:
+            mode_payload={"DateTimeType":"NTP" if settings["enabled"] else "Manual","DaylightSavings":bool(field(clock,"DaylightSavings",False))}
+            if field(clock,"TimeZone") is not None:mode_payload["TimeZone"]=copy.deepcopy(field(clock,"TimeZone"))
+            if not settings["enabled"]:
+                utc=field(clock,"UTCDateTime")
+                date,value=field(utc,"Date"),field(utc,"Time")
+                try:datetime(int(field(date,"Year")),int(field(date,"Month")),int(field(date,"Day")),int(field(value,"Hour")),int(field(value,"Minute")),int(field(value,"Second")))
+                except (ValueError,TypeError):raise NotImplementedError("Без текущего UTC-времени нельзя безопасно отключить NTP") from None
+                mode_payload["UTCDateTime"]=copy.deepcopy(utc)
+        changed=from_dhcp!=state["from_dhcp"] or [ntp_address(v) for v in hosts]!=state["servers"]
+        if not changed and not mode_changed:return dict(**state,saved=True,accepted=True,message="Нет изменений")
+        try:
+            if changed:device.SetNTP({"FromDHCP":from_dhcp,"NTPManual":hosts})
+            if mode_payload:device.SetSystemDateAndTime(mode_payload)
+        except Exception as exc:
+            code=(str(getattr(exc,"code",""))+" "+str(exc)).lower()
+            if any(v in code for v in ("actionnotsupported","optionalactionnotimplemented","notimplemented","not supported")):
+                raise NotImplementedError("Устройство отклонило неподдерживаемую операцию NTP") from None
+            raise
+        runtime.audit("device.ntp",f"device={cam['id']}; servers={len(hosts)}; mode_changed={mode_changed}")
+        try:
+            _,_,readback=read_onvif_ntp(device)
+            verified=readback["from_dhcp"]==from_dhcp and readback["servers"]==[ntp_address(v) for v in hosts] and (not mode_changed or readback["enabled"]==settings["enabled"])
+        except Exception:
+            readback=state;verified=False
+        return dict(**readback,accepted=True,saved=bool(verified),verification_pending=not verified,message="NTP подтверждён повторным чтением" if verified else "Команда NTP отправлена, но повторное чтение не подтвердило изменения")
 
     @app.post("/api/device/onvif/network", endpoint="dev_api_device_onvif_network")
     @endpoint
@@ -828,13 +1039,46 @@ def register_xm_routes(app,runtime,endpoint,dvr_connect,client_for,service_for):
             if gateway:
                 try:gateway=str(ipaddress.IPv4Address(str(gateway)))
                 except ValueError:raise ValueError("Некорректный шлюз") from None
-            # Set name services first; the address write may immediately move the
-            # device to another network and make further SOAP calls impossible.
-            if "dns" in settings:device.SetDNS({"FromDHCP":dhcp,"DNSManual":[{"Type":"IPv4","IPv4Address":s} for s in servers]})
-            if gateway:device.SetNetworkDefaultGateway({"IPv4Address":[gateway]})
-            response=device.SetNetworkInterfaces({"InterfaceToken":token,"NetworkInterface":{"Enabled":True,"IPv4":ipv4}})
+            original=next(i for i in interfaces if str(field(i,"token",""))==token)
+            original_cfg=field(field(original,"IPv4",{}),"Config",{})
+            manual=plain(field(original_cfg,"Manual",[])) or []
+            interface_changed=field(original_cfg,"DHCP")!=dhcp
+            if not dhcp:
+                # The form changes the primary IPv4 address, preserving additional
+                # addresses that are not represented by its single address field.
+                desired=ipv4["Manual"][0]
+                interface_changed=interface_changed or not manual or any(manual[0].get(k)!=v for k,v in desired.items())
+                ipv4["Manual"]=[desired,*manual[1:]]
+            expected_dns=None;dns_changed=False;expected_gateway=None;gateway_changed=False
+            if "dns" in settings:
+                before_dns=plain(device.GetDNS())
+                existing_dns=before_dns.get("DNSManual",[]) or []
+                expected_dns={"FromDHCP":bool(dhcp and not servers),"DNSManual":[{"Type":"IPv4","IPv4Address":v} for v in servers]+[v for v in existing_dns if v.get("Type")!="IPv4"]}
+                dns_changed=any(before_dns.get(k,False if k=="FromDHCP" else [])!=v for k,v in expected_dns.items())
+            if gateway:
+                expected_gateway=[gateway]
+                gateway_changed=plain(device.GetNetworkDefaultGateway()).get("IPv4Address",[])!=expected_gateway
+            # Validate/read everything before the first write. Name services first:
+            # changing an interface may immediately move the device to another IP.
+            if dns_changed:device.SetDNS(expected_dns)
+            if gateway_changed:device.SetNetworkDefaultGateway({"IPv4Address":expected_gateway})
+            response=None
+            if interface_changed:response=device.SetNetworkInterfaces({"InterfaceToken":token,"NetworkInterface":{"IPv4":ipv4}})
+            changed=interface_changed or dns_changed or gateway_changed
+            if not changed:return dict(saved=True,accepted=True,restart_required=False,message="Нет изменений")
             runtime.audit("device.network",f"device={cam['id']}; dhcp={dhcp}")
-            return dict(saved=True,restart_required=bool(field(response,"RebootNeeded",False)),message="Сетевые настройки отправлены. При смене адреса обновите IP в карточке подключения.")
+            try:
+                after=next(i for i in device.GetNetworkInterfaces() if str(field(i,"token",""))==token)
+                after_cfg=plain(field(field(after,"IPv4",{}),"Config",{}))
+                verified=not interface_changed or after_cfg.get("DHCP")==dhcp and (dhcp or after_cfg.get("Manual")==ipv4["Manual"])
+                if dns_changed:
+                    observed_dns=plain(device.GetDNS())
+                    verified=verified and all(observed_dns.get(k)==v for k,v in expected_dns.items())
+                if gateway_changed:verified=verified and plain(device.GetNetworkDefaultGateway()).get("IPv4Address")==expected_gateway
+            except Exception:
+                verified=False
+            return dict(saved=bool(verified),accepted=True,verification_pending=not verified,restart_required=bool(field(response,"RebootNeeded",False)),message="Изменения подтверждены повторным чтением устройства" if verified else "Команды отправлены, но повторное чтение не подтвердило изменения. При смене адреса обновите IP подключения и проверьте устройство.")
+
         result=dict(interfaces=plain(interfaces),dns=None,gateway=None,protocols=None)
         for key,method in (("dns","GetDNS"),("gateway","GetNetworkDefaultGateway"),("protocols","GetNetworkProtocols")):
             try:result[key]=plain(getattr(device,method)())

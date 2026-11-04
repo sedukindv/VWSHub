@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from flask import Blueprint,abort,jsonify,request
 
 from . import access,schema
+from .images import image_name,validate_asset,decode_image,PREFIX
 from .core import body,text,integer,validate_device,request_user_payload,public_user,validate_user_grants,LOGIN_RE
 from .structure import CONNECTION_FIELDS,normalize_spaces
 from .workspace import uid,commit_catalog
@@ -154,11 +155,13 @@ def register_transfers(app,rt):
             items=[]
             for user in users:
                 if selected is not None and user["username"] not in selected:continue
-                item={k:copy.deepcopy(user[k]) for k in ("username","alias","avatar","theme","language","role") if k in user}
+                item={k:copy.deepcopy(user[k]) for k in ("username","alias","avatar","theme","language","timezone","role") if k in user}
                 item.update(grants=access.grants(user),permissions=access.features(user))
                 item["references"]={kind:{key:reverse[kind][key] for key in item["grants"][kind] if key in reverse[kind]} for kind in access.KINDS}
                 item["pending_grants"]=copy.deepcopy(user.get("pending_grants",[]));items.append(item)
             payload["users"]=items
+            names={name for item in items if (name:=image_name(item.get("avatar")))}
+            payload["images"]={name:base64.b64encode(rt.store.images.path(name).read_bytes()).decode() for name in names}
         return payload
 
     @bp.route("/api/transfers/<kind>/export",methods=["GET","POST"])
@@ -304,7 +307,7 @@ def register_transfers(app,rt):
                          "pending":sum(not m["channel_id"] for m in validated["members"])})
         if len(spaces)>1000:raise ValueError("Слишком много пространств")
 
-    def prepare_users(payload,mode,skip,cameras,devices,spaces,users,rows,user):
+    def prepare_users(payload,mode,skip,cameras,devices,spaces,users,rows,user,images):
         incoming=payload.get("users");origin=payload["origin"];local=rt.settings()["catalog_origin"]
         if not isinstance(incoming,list) or len(incoming)>1000:raise ValueError("Неверный список пользователей")
         maps=object_maps(cameras,devices,spaces,local);seen=set()
@@ -332,7 +335,12 @@ def register_transfers(app,rt):
             for ref in raw.get("pending_grants",[]):
                 if not isinstance(ref,dict) or ref.get("kind") not in access.KINDS or ref.get("level") not in ("read","edit"):raise ValueError("Неверное отложенное право")
                 pending.append({"kind":ref["kind"],"origin_id":schema.identifier(ref.get("origin_id")),"source_id":schema.identifier(ref.get("source_id")),"level":ref["level"]})
-            data={k:raw[k] for k in ("alias","avatar","theme","language","permissions") if k in raw}
+            data={k:raw[k] for k in ("alias","avatar","theme","language","timezone","permissions") if k in raw}
+            avatar=data.get("avatar", "")
+            if isinstance(avatar,str) and avatar.startswith("data:"):
+                name,raw_image=decode_image(avatar);images[name]=raw_image;data["avatar"]=PREFIX+name
+            name=image_name(data.get("avatar"))
+            if name and name not in images and not rt.store.images.path(name).is_file():raise ValueError("В файле отсутствует изображение пользователя")
             data.update(username=old["username"] if old else login,role="viewer",grants=actual,active=old.get("active",True) if old else False)
             previous=old or {"username":login,"role":"viewer","active":False,"password_hash":""}
             cleaned=request_user_payload(data,previous);cleaned["pending_grants"]=pending
@@ -357,11 +365,21 @@ def register_transfers(app,rt):
         skip=data.get("skip",[])
         if not isinstance(skip,list) or len(skip)>4096:raise ValueError("Неверный список пропуска")
         skip={transfer_id(kind,i) for i in skip}
+        images={}
+        if kind=="users":
+            incoming_images=payload.get("images",{})
+            if not isinstance(incoming_images,dict) or len(incoming_images)>1000:raise ValueError("Неверные изображения пользователей")
+            for name,encoded in incoming_images.items():
+                if not isinstance(encoded,str) or len(encoded)>350000:raise ValueError("Изображение слишком велико")
+                try:raw_image=base64.b64decode(encoded,validate=True)
+                except ValueError:raise ValueError("Неверное изображение пользователя") from None
+                validate_asset(name,raw_image);images[name]=raw_image
+            if sum(map(len,images.values()))>16*1024*1024:raise ValueError("Изображения превышают16МБ")
         with rt.store.lock:
             cameras,devices,spaces,users=snapshot();rows=[]
             if kind=="devices":prepare_devices(payload,mode,skip,cameras,devices,spaces,users,rows,user,protected)
             elif kind=="spaces":prepare_spaces(payload,mode,skip,cameras,devices,spaces,users,rows,user)
-            else:prepare_users(payload,mode,skip,cameras,devices,spaces,users,rows,user)
+            else:prepare_users(payload,mode,skip,cameras,devices,spaces,users,rows,user,images)
             spaces=normalize_spaces(spaces,cameras)
             resolve_pending(users,cameras,devices,spaces,rt.settings()["catalog_origin"])
             revision=rt.store.revision
@@ -371,7 +389,7 @@ def register_transfers(app,rt):
         if len(plans)>=30:plans.pop(next(iter(plans)))
         token=uid("preview")
         plans[token]={"kind":kind,"owner":user["username"],"revision":revision,"expires":now+300,
-                      "catalog":(cameras,devices,spaces,users),"rows":rows}
+                      "catalog":(cameras,devices,spaces,users),"images":images,"rows":rows}
         return jsonify(token=token,rows=rows,counts={action:sum(r["action"]==action for r in rows) for action in ("add","update","skip")},
                        pending=sum(r.get("pending",0) for r in rows),expires_seconds=300,revision=revision)
 
@@ -386,7 +404,7 @@ def register_transfers(app,rt):
             if rt.store.revision!=plan["revision"]:return jsonify(error="Каталог изменился. Повторите предварительный просмотр"),409
             before={c["id"]:c for c in rt.store.get_devices()}
             cameras,devices,spaces,users=plan["catalog"]
-            commit_catalog(rt,cameras,devices,spaces,users)
+            commit_catalog(rt,cameras,devices,spaces,users,images=plan.get("images"))
         plans.pop(token,None)
         if kind=="devices":
             from .core import connection_signature
@@ -404,7 +422,7 @@ def register_transfers(app,rt):
         with rt.store.lock:
             users=rt.store.get_users();source=next((u for u in users if u["username"]==username),None)
             if not source:abort(404)
-            template={k:copy.deepcopy(source[k]) for k in ("alias","avatar","theme","language","grants","permissions","pending_grants") if k in source}
+            template={k:copy.deepcopy(source[k]) for k in ("alias","avatar","theme","language","timezone","grants","permissions","pending_grants") if k in source}
             template.update(username=text(data.get("username"),"Логин копии",64,True),role="viewer",active=False,password_hash="")
             if source["role"]=="admin":template.update(grants={kind:{} for kind in access.KINDS},permissions={**access.features(template),"archive_export":False})
             chosen={k:data[k] for k in ("username","alias","password","grants","permissions") if k in data}

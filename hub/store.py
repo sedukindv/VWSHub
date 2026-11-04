@@ -16,11 +16,11 @@ from cryptography.fernet import Fernet, InvalidToken
 from werkzeug.security import generate_password_hash
 
 DEFAULT_SETTINGS = {
-    "branding": {"name":"VWSHub", "subtitle":"Video workspace", "logo":"", "favicon":"", "logo_icon":"", "favicon_icon":"", "accent":"#526cf5", "motion":True,
+    "branding": {"name":"WVW", "subtitle":"Web Video Workspace", "logo":"", "favicon":"", "logo_icon":"", "favicon_icon":"", "accent":"#526cf5", "motion":True,
                  "recorder_labels":"ip", "density":"comfortable", "corners":"rounded", "show_clock":True, "wall_gap":3,
-                 "icon_color":"#71809c"},
+                 "icon_color":"#71809c", "theme_colors":{}},
     "diagnostics":{"enabled":True},
-    "timezone":"Asia/Omsk", "language":"ru", "snapshot_format":"jpeg", "archive_format":"mp4",
+    "timezone":"Asia/Omsk", "language":"ru", "snapshot_format":"jpeg", "archive_format":"mp4", "hevc_support":False,
     "resources": {"profile":"standard", "max_live_streams":16, "max_archive_streams":4,
                   "archive_buffer_mb":16, "archive_idle_seconds":180, "ffmpeg_threads":2},
 }
@@ -74,6 +74,8 @@ class DataLock:
 def safe_image(value, max_bytes=262144):
     if not value: return ""
     if not isinstance(value, str): raise ValueError("Изображение должно быть строкой data URL")
+    from .images import image_name
+    if image_name(value): return value
     match=re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)",value)
     if not match or len(match[2])>max_bytes*4//3+8: raise ValueError("Изображение: PNG/JPEG/WebP до 256 КБ")
     try: raw=base64.b64decode(match[2],validate=True)
@@ -90,6 +92,8 @@ class DataStore:
         self.base_dir.mkdir(parents=True,exist_ok=True)
         protected(self.base_dir,True)
         self._cache={};self.revision=0
+        from .images import Images
+        self.images=Images(self);self._images_ready=False
         self.lock=DataLock(self.base_dir/".store.lock")
         with self.lock:self._initialize(legacy_dir)
 
@@ -127,6 +131,13 @@ class DataStore:
         from .structure import initialize_catalog
         initialize_catalog(self)
         self.save_devices(self.get_devices())
+        current=self.get_settings()
+        if current["branding"].get("name")=="VWSHub":
+            self.images.snapshot("wvw-brand")
+            current["branding"]["name"]="WVW"
+            if current["branding"].get("subtitle")=="Video workspace":current["branding"]["subtitle"]="Web Video Workspace"
+            self._write(self.settings_file,current)
+        self.images.migrate();self._images_ready=True
 
     @staticmethod
     def connection_key(device):
@@ -151,8 +162,10 @@ class DataStore:
         try:
             previous=json.loads(journal.read_text(encoding="utf-8"))
             allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
-            if not isinstance(previous,dict) or set(previous)-allowed:raise ValueError()
+            from .images import image_file
+            if not isinstance(previous,dict) or any(name not in allowed and not image_file(name) for name in previous):raise ValueError()
             for filename,encoded in previous.items():
+                if filename.startswith("images/"):self.images.path(filename[7:])
                 if encoded is None:
                     target=self.base_dir/filename
                     if target.exists():target.unlink()
@@ -162,13 +175,17 @@ class DataStore:
 
     def restore(self,files):
         allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
-        if set(files)!=allowed:raise ValueError("Неполный набор файлов восстановления")
-        self.transaction(files)
+        from .images import image_file,prepare_restore_images
+        if not allowed.issubset(files) or any(name not in allowed and not image_file(name) for name in files):raise ValueError("Неполный набор файлов восстановления")
+        self.transaction(prepare_restore_images(files))
 
     def transaction(self,files):
         """Readers see a whole catalog; a crash rolls back the incomplete journal."""
         allowed={"users.json","groups.json","devices.json","settings.json","recorders.json",".camkey",".flask_secret"}
-        if not files or set(files)-allowed:raise ValueError("Неизвестные файлы транзакции")
+        from .images import image_file
+        if not files or any(name not in allowed and not image_file(name) for name in files):raise ValueError("Неизвестные файлы транзакции")
+        for name in files:
+            if image_file(name):self.images.path(name[7:])
         with self.lock:
             old={name:base64.b64encode((self.base_dir/name).read_bytes()).decode() if (self.base_dir/name).exists() else None for name in files}
             journal=self.base_dir/".restore-journal.json"
@@ -302,13 +319,18 @@ class DataStore:
             raw=self._read(self.settings_file)
             if not isinstance(raw,dict):raise DataCorruptError("Неверный формат settings.json")
             result=copy.deepcopy(DEFAULT_SETTINGS);result.update(raw)
+            if not isinstance(result["hevc_support"],bool):raise DataCorruptError("Неверный параметр HEVC в settings.json")
             result["branding"]={**DEFAULT_SETTINGS["branding"],**(raw.get("branding") or {})}
             result["resources"]={**DEFAULT_SETTINGS["resources"],**(raw.get("resources") or {})}
             result["diagnostics"]={**DEFAULT_SETTINGS["diagnostics"],**(raw.get("diagnostics") or {})}
             return result
     def save_users(self,value):
         from .access import normalize_user
-        with self.lock:self._write(self.users_file,[normalize_user(user) for user in value])
+        with self.lock:
+            if self._images_ready:
+                for user in value:user["avatar"]=self.images.persist(user.get("avatar", ""))
+            self._write(self.users_file,[normalize_user(user) for user in value])
+            if self._images_ready:self.images.collect()
     def save_devices(self,value):
         with self.lock:
             devices,recorders=self.catalog_values(value)
@@ -319,7 +341,12 @@ class DataStore:
         from .structure import normalize_spaces
         with self.lock:self._write(self.groups_file,normalize_spaces(value,self.get_devices()))
     def save_settings(self,value):
-        with self.lock:self._write(self.settings_file,value)
+        with self.lock:
+            if self._images_ready:
+                for key in ("logo","favicon"):
+                    value.setdefault("branding",{})[key]=self.images.persist(value.get("branding",{}).get(key,""))
+            self._write(self.settings_file,value)
+            if self._images_ready:self.images.collect()
     def save_recorders(self,value):
         with self.lock:self._write(self.recorders_file,value)
     def enc_pwd(self,value):return "enc:"+self.fernet.encrypt(value.encode()).decode() if value else ""
