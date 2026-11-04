@@ -85,3 +85,52 @@ jobs:
             tests/browser/test-results/
           if-no-files-found: warn
           retention-days: 14
+
+  browser-visual-review:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'release-')
+    needs: [regression, browser-functional]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI: 'true'
+      WVW_PYTHON: python
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -r requirements-dev.txt
+      - working-directory: tests/browser
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+      - working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Explicit manual visual review; no baseline acceptance or repository writes
+        working-directory: tests/browser
+        shell: bash
+        run: |
+          if python -c "from pathlib import Path; raise SystemExit(not any(Path('snapshots').rglob('*.png')))"; then
+            npm run test:visual
+          else
+            npm run visual:update
+            echo 'Candidate images generated. Human review and a separate commit are required before comparison.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload visual comparison or unapproved candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: visual-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/browser/snapshots/
+            tests/browser/playwright-report/
+            tests/browser/test-results/
+          if-no-files-found: warn
+          retention-days: 14
