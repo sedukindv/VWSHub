@@ -16,6 +16,9 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .store import DEFAULT_SETTINGS, DataStore, safe_image
 from . import schema
+from .images import image_file,image_name,validate_asset
+from .localization import SUPPORTED_LOCALES,timezone_preference
+from .appearance import theme_colors
 from .structure import physical_catalog,normalize_spaces,CONNECTION_FIELDS
 
 FILES = {"users.json", "groups.json", "devices.json", "recorders.json", "settings.json", ".camkey", ".flask_secret"}
@@ -31,10 +34,11 @@ def validate_backup(raw):
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             entries = archive.infolist()
             names = [entry.filename for entry in entries]
-            if len(names) != len(set(names)) or len(names) > 10:
+            if len(names) != len(set(names)) or len(names) > 2010:
                 raise ValueError("В ZIP повторяются файлы или слишком много записей")
             allowed = {"data/" + name for name in FILES} | {"BACKUP.txt", "data/"}
-            if set(names) - allowed:
+            image_paths={name for name in names if name.startswith("data/") and image_file(name[5:])}
+            if set(names) - allowed - image_paths:
                 raise ValueError("В backup есть посторонние файлы или небезопасные пути")
             if sum(entry.file_size for entry in entries) > MAX_BYTES:
                 raise ValueError("Распакованный backup превышает 16 МБ")
@@ -44,6 +48,8 @@ def validate_backup(raw):
             required = {"data/" + name for name in FILES - {"recorders.json"}}
             if required - set(names):
                 raise ValueError("Backup не содержит всех файлов данных и ключей")
+            image_contents={name[5:]:archive.read(name) for name in image_paths}
+            for name,raw_image in image_contents.items():validate_asset(name[7:],raw_image)
             contents = {name: archive.read("data/" + name) for name in FILES if "data/" + name in names}
     except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, NotImplementedError, UnicodeError):
         raise ValueError("Не удалось прочитать ZIP backup") from None
@@ -97,10 +103,10 @@ def validate_backup(raw):
         access = user.get("group_access", {})
         if not isinstance(access, dict) or set(access) - set(chosen) or any(not isinstance(v, str) or v not in {"read", "edit"} for v in access.values()):
             raise ValueError("Некорректные права групп")
-        if not isinstance(user.get("theme", "auto"), str) or user.get("theme", "auto") not in {"auto", "dark", "light"} or not isinstance(user.get("language", "ru"), str) or user.get("language", "ru") not in {"ru", "en"}:
+        if not isinstance(user.get("theme", "auto"), str) or user.get("theme", "auto") not in {"auto", "dark", "light"} or not isinstance(user.get("language", "ru"), str) or user.get("language", "ru") not in SUPPORTED_LOCALES:
             raise ValueError("Некорректный язык или тема")
         clean_users.append({"username": name, "alias": text(user.get("alias", name), "Псевдоним", 100),
-                            "avatar": safe_image(user.get("avatar", "")), "role": user["role"], "password_hash": digest,
+                            "avatar": safe_image(user.get("avatar", "")), "timezone":timezone_preference(user.get("timezone","")), "role": user["role"], "password_hash": digest,
                             "theme": user.get("theme", "auto"), "language": user.get("language", "ru"),
                             "group_ids": chosen, "group_access": {gid: access.get(gid, "read") for gid in chosen},
                             "archive_access": user["role"] == "admin" or user.get("archive_access") is True})
@@ -175,9 +181,12 @@ def validate_backup(raw):
     if not isinstance(raw_settings, dict): raise ValueError("Некорректные настройки backup")
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings["schema_version"]=3
+    hevc=raw_settings.get("hevc_support",False)
+    if not isinstance(hevc,bool):raise ValueError("Неверный параметр HEVC backup")
+    settings["hevc_support"]=hevc
     settings["catalog_origin"]=schema.identifier(raw_settings["catalog_origin"]) if raw_settings.get("catalog_origin") else uuid.uuid4().hex
     for item in clean_cameras+clean_recorders:item.setdefault("origin_id",settings["catalog_origin"])
-    for key, allowed in {"language": {"ru", "en"}, "snapshot_format": {"jpeg", "png", "webp"}, "archive_format": {"mp4"}}.items():
+    for key, allowed in {"language": SUPPORTED_LOCALES, "snapshot_format": {"jpeg", "png", "webp"}, "archive_format": {"mp4","avi","original"}}.items():
         value = raw_settings.get(key, settings[key])
         if not isinstance(value, str) or value not in allowed: raise ValueError("Неизвестный параметр backup: " + key)
         settings[key] = value
@@ -187,6 +196,7 @@ def validate_backup(raw):
     brand = raw_settings.get("branding", {})
     if not isinstance(brand, dict): raise ValueError("Неверное оформление backup")
     settings["branding"].update({k: text(brand.get(k, settings["branding"][k]), k, 80, k == "name") for k in ("name", "subtitle")})
+    settings["branding"]["theme_colors"]=theme_colors(brand.get("theme_colors",{}))
     for k in ("logo", "favicon"): settings["branding"][k] = safe_image(brand.get(k, ""))
     for k in ("logo_icon","favicon_icon"):
         value=brand.get(k,"")
@@ -207,7 +217,7 @@ def validate_backup(raw):
         settings["branding"][k] = value
     settings["branding"]["wall_gap"] = integer(brand.get("wall_gap", 3), "Отступ", 0, 12)
     resource = raw_settings.get("resources", {})
-    if not isinstance(resource, dict) or not isinstance(resource.get("profile", "standard"), str) or resource.get("profile", "standard") not in {"standard", "maximum", "custom"}: raise ValueError("Неверный профиль ресурсов")
+    if not isinstance(resource, dict) or not isinstance(resource.get("profile", "standard"), str) or resource.get("profile", "standard") not in {"minimal", "standard", "maximum", "custom"}: raise ValueError("Неверный профиль ресурсов")
     for k, bounds in {"max_live_streams": (1, 128), "max_archive_streams": (1, 16), "archive_buffer_mb": (2, 128), "archive_idle_seconds": (30, 600), "ffmpeg_threads": (0, 32)}.items():
         settings["resources"][k] = integer(resource.get(k, settings["resources"][k]), k, *bounds)
     settings["resources"]["profile"] = resource.get("profile", "standard")
@@ -219,6 +229,13 @@ def validate_backup(raw):
                   "recorders.json": clean_recorders, "settings.json": settings}
     result = {name: json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8") for name, value in normalized.items()}
     result.update({".camkey": camera_key, ".flask_secret": secret.encode()})
+    refs=[settings["branding"].get(k,"") for k in ("logo","favicon")]+[u.get("avatar","") for u in clean_users]
+    for value in refs:
+        name=image_name(value)
+        if name and "images/"+name not in image_contents:raise ValueError("Backup не содержит используемое изображение")
+    result.update(image_contents)
+    from .images import prepare_restore_images
+    result=prepare_restore_images(result)
     summary = {"users": len(users), "groups": len(groups), "cameras": len(cameras), "recorders": len(clean_recorders),
                "admins": [u["username"] for u in clean_users if u["role"] == "admin"], "sha256": hashlib.sha256(raw).hexdigest()}
     return result, summary

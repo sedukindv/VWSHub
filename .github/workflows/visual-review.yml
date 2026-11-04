@@ -1,0 +1,69 @@
+name: Visual baseline review (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Compare reviewed goldens or generate candidates for human review
+        required: true
+        default: compare
+        type: choice
+        options:
+          - compare
+          - candidates
+permissions:
+  contents: read
+concurrency:
+  group: visual-review-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  visual-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      WVW_PYTHON: python
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -r requirements-dev.txt
+      - working-directory: tests/browser
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+      - working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Functional assertions must pass before visual work
+        working-directory: tests/browser
+        run: npm test
+      - name: Compare committed reviewed goldens (missing goldens fail)
+        if: inputs.mode == 'compare'
+        working-directory: tests/browser
+        run: npm run test:visual
+      - name: Generate candidate pixels for human review only
+        if: inputs.mode == 'candidates'
+        working-directory: tests/browser
+        run: npm run visual:update
+      - name: Upload visual candidates and diagnostic differences
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: visual-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/browser/snapshots/
+            tests/browser/playwright-report/
+            tests/browser/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+      # This workflow cannot commit/push/approve images. Reviewed candidates must
+      # be committed in a separate human-reviewed change before compare passes.

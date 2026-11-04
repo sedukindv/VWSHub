@@ -1,4 +1,4 @@
-/* VWSHub operator monitor. View files contain camera IDs, never device credentials. */
+/* WVW operator monitor. View files contain camera IDs, never device credentials. */
 (() => {
   "use strict";
   let saved = null;
@@ -134,27 +134,106 @@
         return m.cells.slice(m.page * capacity(), (m.page + 1) * capacity());
       };
       function release(cells) {
+        const sources = cells.filter(c => c && c.serverRequested !== false), releasing = new Set(sources);
         const keys = new Map(
-          cells.map((c) => [c.camera_id + "|" + c.stream, c]),
+          sources.map((c) => [c.camera_id + "|" + c.stream + "|" + (c.container || "ts"), c]),
         );
-        for (const c of keys.values())
+        for (const c of keys.values()) {
+          // Duplicate tiles share one wall lease. Closing one tile must not
+          // release the same profile/container still used by another tile.
+          if ([...players.values()].some(other => !releasing.has(other) && !other.closed && other.serverRequested &&
+              other.camera_id === c.camera_id && other.stream === c.stream && (other.container || "ts") === (c.container || "ts"))) continue;
           H.api("/api/live/stop", {
             method: "POST",
-            body: { cam_id: c.camera_id, stream: c.stream, consumer },
+            body: { cam_id: c.camera_id, stream: c.stream, container: c.container || "ts", consumer },
             keepalive: true,
           }).catch(() => {});
+        }
+      }
+      function disposePlayer(item) {
+        if (!item || item.closed) return;
+        item.closed = true;
+        item.abort?.abort();
+        item.hls?.destroy();
+        item.hevcPlan?.release();
+        item.video.onplaying = item.video.onerror = null;
+        item.video.pause(); item.video.removeAttribute("src"); item.video.load();
+      }
+      let audioNode = null, audioHls = null, audioKey = null,
+        audioGeneration = 0, audioSupported = false, audioReason = "", audioEnabled = false, lastAudioSelection = null, audioPlaybackState = "off";
+      function audioButton() {
+        const button = $("#wall-live-audio");
+        if (!button) return;
+        button.disabled = !audioSupported;
+        button.setAttribute("aria-pressed", String(audioEnabled));
+        button.dataset.audioState = audioPlaybackState;
+        button.title = audioReason || stateText("Звук выбранной камеры", "Selected camera audio");
+        button.setAttribute("aria-label", button.title);
+        button.innerHTML = icon(audioEnabled ? "volume-2" : "volume-x");
+      }
+      function stopAudio(reason = "") {
+        audioGeneration++;
+        audioHls?.destroy(); audioHls = null;
+        if (audioNode) { audioNode.pause(); audioNode.removeAttribute("src"); audioNode.load(); audioNode.remove(); audioNode = null; }
+        if (audioKey) release([{ camera_id: audioKey.camera_id, stream: "audio-" + audioKey.stream }]);
+        audioKey = null; audioEnabled = false; audioPlaybackState = "off";
+        if (reason) { audioReason = reason; audioSupported = false; }
+        audioButton();
+      }
+      async function probeLiveAudio() {
+        stopAudio(); audioSupported = false;
+        const slot = m.cells.find((cell) => cell?.uid === selected);
+        audioReason = slot ? stateText("Проверка аудиодорожки Live…", "Checking live audio track…") : stateText("Камера не выбрана", "Camera not selected");
+        audioButton();
+        if (!slot) return;
+        const generation = audioGeneration;
+        try {
+          const answer = await H.api(`/api/live/audio/capabilities?cam_id=${encodeURIComponent(slot.camera_id)}&stream=${slot.stream}`);
+          if (disposed || generation !== audioGeneration) return;
+          audioSupported = answer.live_audio?.supported === true;
+          audioReason = answer.live_audio?.reason || stateText("Звук Live не подтверждён", "Live audio not confirmed");
+        } catch (error) {
+          if (generation !== audioGeneration) return;
+          audioReason = error.message;
+        }
+        audioButton();
+      }
+      function toggleLiveAudio() {
+        if (audioEnabled) { stopAudio(); return; }
+        const slot = m.cells.find((cell) => cell?.uid === selected);
+        if (!slot || !audioSupported || disposed) return;
+        stopAudio();
+        audioKey = { camera_id: slot.camera_id, stream: slot.stream };
+        const generation = audioGeneration;
+        const node = new Audio(); audioNode = node; node.preload = "none";
+        node.id = "wall-audio-media"; node.hidden = true; root.append(node);
+        node.onplaying = () => { if (audioNode === node && generation === audioGeneration) { audioPlaybackState = "playing"; audioButton(); } };
+        node.onended = () => { if (audioNode === node) stopAudio(); };
+        const failAudio = () => {
+          if (audioNode === node && generation === audioGeneration)
+            stopAudio(stateText("Звук Live остановлен: поток недоступен или браузер запретил воспроизведение", "Live audio stopped: stream unavailable or browser playback denied"));
+        };
+        node.onerror = failAudio;
+        const url = `/live/${encodeURIComponent(slot.camera_id)}/audio-${slot.stream}/index.m3u8?consumer=${consumer}`;
+        if (window.Hls?.isSupported()) {
+          const hls = new Hls({ maxBufferLength: 8, liveSyncDurationCount: 2 }); audioHls = hls;
+          hls.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal || [401, 403].includes(data.response?.code)) failAudio(); });
+          hls.loadSource(url); hls.attachMedia(node);
+        } else if (node.canPlayType("application/vnd.apple.mpegurl")) node.src = url;
+        else { failAudio(); return; }
+        // Called in the user gesture; the promise remains pending while HLS loads.
+        node.play().catch(failAudio);
+        audioEnabled = true; audioPlaybackState = "loading"; audioButton();
       }
       function stopPlayers() {
+        stopAudio();
         release([...players.values()]);
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
         ptzCleanup?.();
         ptzCleanup = null;
         for (const item of players.values()) {
-          item.hls?.destroy();
-          item.video.pause();
-          item.video.removeAttribute("src");
-          item.video.load();
+          disposePlayer(item);
         }
         players.clear();
       }
@@ -182,7 +261,8 @@
         return `<article class="wall-tile ${selected === cell.uid ? "selected" : ""}" tabindex="0" data-tile="${cell.uid}" draggable="true" aria-label="${h(c.name)}"><header><span class="wall-channel">${String(m.page * capacity() + index + 1).padStart(2, "0")}</span><strong title="${h(c.name)}">${h(c.name)}</strong><span class="wall-stream-status" id="live-status-${cell.uid}">${stateText("Соединение", "Connecting")}</span><div class="wall-tile-actions">${c.protocol === "dvrip" ? `<select data-quality="${cell.uid}" aria-label="Stream"><option value="sub" ${cell.stream === "sub" ? "selected" : ""}>SD</option><option value="main" ${cell.stream === "main" ? "selected" : ""}>HD</option></select>` : ""}<button type="button" class="icon-btn" data-focus="${cell.uid}" title="${stateText("Развернуть", "Expand")}">${icon("expand")}</button><button type="button" class="icon-btn" data-remove="${cell.uid}" title="${t("Удалить")}">${icon("close")}</button></div></header><div class="wall-video"><video id="live-video-${cell.uid}" autoplay muted playsinline></video><div class="wall-overlay" id="live-overlay-${cell.uid}"><span class="spin"></span><strong>${stateText("Подключение к камере", "Connecting to camera")}</strong></div></div><footer><span>${h(deviceLabel(c))}${c.protocol === "dvrip" ? ` / CH ${Number(c.channel || 0) + 1}` : ""}</span><span>${c.protocol === "dvrip" ? "DVRIP" : "RTSP"}</span></footer></article>`;
       }
       function stateText(ru, en) {
-        return H.state.language === "en" ? en : ru;
+        // Translate plain fragments separately; the only markup here is our own <br>.
+        return ru.split(/<br\s*\/?\s*>/i).map((part,index)=>window.WVWI18n.translate(part,H.state.language,en?.split(/<br\s*\/?\s*>/i)[index] || part)).join("<br>");
       }
       function deviceKey(c) {
         return c.recorder_id || `${c.protocol}|${c.ip}|${c.port}`;
@@ -210,7 +290,7 @@
           `<button type="button" class="wall-tree-camera" draggable="true" data-camera="${h(c.id)}" title="${h(c.name)}">${icon(c.device_kind === "recorder" ? "webcam" : "camera")}<span>${h(c.name)}</span><small>${c.device_kind === "recorder" ? Number(c.channel || 0) + 1 : "IP"}</small></button>`;
         const node = (selection, label, symbol, members, children) => {
           const key = selection.kind + ":" + selection.id;
-          return `<details data-node="${h(key)}" ${treeOpen.get(key) === false && !query ? "" : "open"}><summary>${window.VWSIcons.html(symbol, "folder")}<button type="button" class="wall-tree-collection" draggable="${!!members.length}" data-collection="${h(JSON.stringify(selection))}" data-label="${h(label)}" ${members.length ? "" : "disabled"} title="${stateText("Открыть все камеры", "Open all cameras")}"><span>${h(label)}</span><small>${members.length}</small>${icon("plus")}</button></summary><div>${children}</div></details>`;
+          return `<details data-node="${h(key)}" ${treeOpen.get(key) === false && !query ? "" : "open"}><summary>${window.VWSIcons.html(symbol, "folder")}<button type="button" class="wall-tree-collection" draggable="${!!members.length}" data-collection="${h(JSON.stringify(selection))}" data-label="${h(label)}" ${members.length ? "" : "disabled"} title="${stateText("Открыть все камеры", "Open all cameras")}"><span data-no-i18n>${h(label)}</span><small>${members.length}</small>${icon("plus")}</button></summary><div>${children}</div></details>`;
         };
         let html = `<div class="wall-tree-global"><button type="button" class="wall-tree-collection" draggable="true" data-collection="${h(JSON.stringify({ kind: "all" }))}" data-label="${stateText("Все источники", "All sources")}">${icon("monitor")}<span>${stateText("Все источники", "All sources")}</span><small>${cameras.length}</small>${icon("plus")}</button></div>`;
         if (m.treeMode === "devices") {
@@ -356,6 +436,7 @@
         });
       }
       function render() {
+        stopAudio(); lastAudioSelection = null;
         captureTree();
         const retained = new Map();
         const visibleCells = visible();
@@ -369,10 +450,7 @@
             const tile = item.video.closest(".wall-tile");
             if (tile) retained.set(id, tile);
           } else {
-            item.hls?.destroy();
-            item.video.pause();
-            item.video.removeAttribute("src");
-            item.video.load();
+            disposePlayer(item);
             players.delete(id);
             if (
               !desired.some(
@@ -392,7 +470,7 @@
           pages = Math.max(1, Math.ceil(m.cells.length / cap));
         if (!cells.some((c) => c?.uid === selected))
           selected = cells.find(Boolean)?.uid || null;
-        root.innerHTML = `<section class="wall-console"><header class="wall-toolbar"><div class="wall-heading">${icon("monitor")}<h1>${t("Просмотр")}</h1><span>LIVE MONITOR</span></div><div class="row-actions"><button type="button" id="wall-tree-toggle" class="icon-btn" aria-pressed="${m.tree}" aria-label="${stateText("Панель источников", "Source panel")}" title="${stateText("Панель источников", "Source panel")}">${icon(m.tree ? "panel-left-close" : "panel-left-open")}</button><div class="wall-layouts">${model.layouts.map((shape) => `<button type="button" data-layout="${shape.id}" aria-label="${shape.count} ${stateText(shape.count === 1 ? "окно" : shape.count === 4 ? "окна" : "окон", shape.count === 1 ? "window" : "windows")}" title="${shape.count} ${stateText(shape.count === 1 ? "окно" : shape.count === 4 ? "окна" : "окон", shape.count === 1 ? "window" : "windows")}" aria-pressed="${m.layout === shape.id}">${layoutIcon(shape)}</button>`).join("")}</div><button type="button" class="btn btn-sm" id="view-save" title="${stateText("Сохранить в браузере", "Save in browser")}">${icon("check")}<span>${t("Сохранить")}</span></button><button type="button" class="icon-btn" id="view-export" title="${stateText("Экспорт вида", "Export view")}">${icon("download")}</button><button type="button" class="icon-btn" id="view-import" title="${stateText("Импорт вида", "Import view")}">${icon("upload")}</button><button type="button" class="icon-btn" id="wall-fullscreen" title="${stateText("На весь экран", "Fullscreen")}">${icon("expand")}</button><button type="button" class="icon-btn" id="wall-inspector-toggle" title="${t("Параметры подключения")}">${icon("settings")}</button></div></header><div class="wall-body ${m.tree ? "" : "no-tree"} ${m.inspector ? "with-inspector" : ""}"><aside class="wall-tree"><div class="wall-tree-head"><strong>${stateText("Источники", "Sources")}</strong><span>${cameras.length}</span></div><div class="wall-tree-modes" role="tablist" aria-label="${stateText("Дерево источников", "Source tree")}"><button type="button" data-tree-mode="spaces" role="tab" aria-selected="${m.treeMode === "spaces"}">${icon("layers-3")}${stateText("Пространства", "Spaces")}</button><button type="button" data-tree-mode="devices" role="tab" aria-selected="${m.treeMode === "devices"}">${icon("video")}${stateText("Устройства", "Devices")}</button></div><div class="wall-tree-filters"><input id="wall-search" class="field" placeholder="${t("Поиск камер")}" value="${h(treeQuery)}"><select class="select" id="wall-group" ${m.treeMode === "devices" ? "hidden" : ""}><option value="">${stateText("Все пространства", "All spaces")}</option>${groups.map((g) => `<option value="${h(g.id)}" ${m.group === g.id ? "selected" : ""}>${h(g.name)}</option>`).join("")}</select></div><div class="wall-tree-list" id="wall-tree-list">${treeHTML()}</div><div class="wall-tree-bottom"><p>${stateText("Перетащите камеру в ячейку.<br>Двойной щелчок — развернуть.", "Drag a camera into a cell.<br>Double-click to expand.")}</p></div></aside><div class="wall-monitor"><div class="wall-monitor-head"><span>${icon("grid")}${h(m.title || groups.find((g) => g.id === m.group)?.name || stateText("Основной монитор", "Main monitor"))}</span><div>${buttonIcon("wall-prev", "left", m.page === 0)}<span>${m.page + 1} / ${pages}</span>${buttonIcon("wall-next", "right", m.page === pages - 1)}<button type="button" class="icon-btn ${sequence ? "active" : ""}" id="wall-sequence" aria-pressed="${!!sequence}" title="${stateText("Автосмена каждые 15 секунд", "Cycle pages every 15 seconds")}">${icon("route")}</button></div></div><div class="wall-grid" id="wall-grid" data-layout="${m.layout}" style="--columns:${m.columns};--rows:${model.layout(m.layout).rows};--large:${model.layout(m.layout).large || 1};--wall-gap:${Number(H.state.branding.wall_gap ?? 3)}px">${Array.from({ length: cap }, (_, i) => tile(cells[i] || null, i)).join("")}</div><div class="wall-transport"><div id="wall-selected"></div><div class="row-actions"><button type="button" id="wall-reconnect" class="icon-btn" title="${t("Обновить")}">${icon("refresh")}</button><button type="button" id="wall-snapshot" class="icon-btn" title="${t("Фотоаппарат")}" aria-label="${t("Фотоаппарат")}">${icon("photo")}</button><button type="button" id="wall-to-archive" class="icon-btn" title="${t("Архив")}" aria-label="${t("Архив")}">${icon("archive")}</button></div></div></div><aside class="wall-inspector" id="wall-inspector"></aside></div><footer class="wall-status"><span><i class="dot online"></i> VWSHub 0.8.5</span><span id="wall-streams">${stateText("Соединение с потоками…", "Connecting streams…")}</span><span id="wall-clock"></span></footer></section>`;
+        root.innerHTML = `<section class="wall-console"><header class="wall-toolbar"><div class="wall-heading">${icon("monitor")}<h1>${t("Просмотр")}</h1><span>${t("Живое видео")}</span></div><div class="row-actions"><button type="button" id="wall-tree-toggle" class="icon-btn" aria-pressed="${m.tree}" aria-label="${stateText("Панель источников", "Source panel")}" title="${stateText("Панель источников", "Source panel")}">${icon(m.tree ? "panel-left-close" : "panel-left-open")}</button><div class="wall-layouts">${model.layouts.map((shape) => `<button type="button" data-layout="${shape.id}" aria-label="${h(window.WVWI18n.count(shape.count,"window",H.state.language))}" title="${h(window.WVWI18n.count(shape.count,"window",H.state.language))}" aria-pressed="${m.layout === shape.id}">${layoutIcon(shape)}</button>`).join("")}</div><button type="button" class="btn btn-sm" id="view-save" title="${stateText("Сохранить в браузере", "Save in browser")}">${icon("check")}<span>${t("Сохранить")}</span></button><button type="button" class="icon-btn" id="view-export" title="${stateText("Экспорт вида", "Export view")}">${icon("download")}</button><button type="button" class="icon-btn" id="view-import" title="${stateText("Импорт вида", "Import view")}">${icon("upload")}</button><button type="button" class="icon-btn" id="wall-fullscreen" title="${stateText("На весь экран", "Fullscreen")}">${icon("expand")}</button><button type="button" class="icon-btn" id="wall-inspector-toggle" title="${t("Параметры подключения")}">${icon("settings")}</button></div></header><div class="wall-body ${m.tree ? "" : "no-tree"} ${m.inspector ? "with-inspector" : ""}"><aside class="wall-tree"><div class="wall-tree-head"><strong>${stateText("Источники", "Sources")}</strong><span>${cameras.length}</span></div><div class="wall-tree-modes" role="tablist" aria-label="${stateText("Дерево источников", "Source tree")}"><button type="button" data-tree-mode="spaces" role="tab" aria-selected="${m.treeMode === "spaces"}">${icon("layers-3")}${stateText("Пространства", "Spaces")}</button><button type="button" data-tree-mode="devices" role="tab" aria-selected="${m.treeMode === "devices"}">${icon("video")}${stateText("Устройства", "Devices")}</button></div><div class="wall-tree-filters"><input id="wall-search" class="field" placeholder="${t("Поиск камер")}" value="${h(treeQuery)}"><select class="select" id="wall-group" ${m.treeMode === "devices" ? "hidden" : ""}><option value="">${stateText("Все пространства", "All spaces")}</option>${groups.map((g) => `<option data-no-i18n value="${h(g.id)}" ${m.group === g.id ? "selected" : ""}>${h(g.name)}</option>`).join("")}</select></div><div class="wall-tree-list" id="wall-tree-list">${treeHTML()}</div><div class="wall-tree-bottom"><p>${stateText("Перетащите камеру в ячейку.<br>Двойной щелчок — развернуть.", "Drag a camera into a cell.<br>Double-click to expand.")}</p></div></aside><div class="wall-monitor"><div class="wall-monitor-head"><span data-no-i18n>${icon("grid")}${h(m.title || groups.find((g) => g.id === m.group)?.name || stateText("Основной монитор", "Main monitor"))}</span><div>${buttonIcon("wall-prev", "left", m.page === 0)}<span>${m.page + 1} / ${pages}</span>${buttonIcon("wall-next", "right", m.page === pages - 1)}<button type="button" class="icon-btn ${sequence ? "active" : ""}" id="wall-sequence" aria-pressed="${!!sequence}" title="${stateText("Автосмена каждые 15 секунд", "Cycle pages every 15 seconds")}">${icon("route")}</button></div></div><div class="wall-grid" id="wall-grid" data-layout="${m.layout}" style="--columns:${m.columns};--rows:${model.layout(m.layout).rows};--large:${model.layout(m.layout).large || 1};--wall-gap:${Number(H.state.branding.wall_gap ?? 3)}px">${Array.from({ length: cap }, (_, i) => tile(cells[i] || null, i)).join("")}</div><div class="wall-transport"><div id="wall-selected"></div><div class="row-actions"><button type="button" id="wall-reconnect" class="icon-btn" title="${t("Обновить")}">${icon("refresh")}</button><button type="button" id="wall-snapshot" class="icon-btn" title="${t("Фотоаппарат")}" aria-label="${t("Фотоаппарат")}">${icon("photo")}</button><button type="button" id="wall-live-audio" class="icon-btn" disabled aria-pressed="false" aria-label="Live audio">${icon("volume-x")}</button><button type="button" id="wall-to-archive" class="icon-btn" title="${t("Архив")}" aria-label="${t("Архив")}">${icon("archive")}</button></div></div></div><aside class="wall-inspector" id="wall-inspector"></aside></div><footer class="wall-status"><span><i class="dot online"></i> WVW 0.9.0</span><span id="wall-streams">${stateText("Соединение с потоками…", "Connecting streams…")}</span><span id="wall-clock"></span></footer></section>`;
         for (const [id, tile] of retained) {
           const placeholder = $("[data-tile='" + id + "']");
           if (placeholder) {
@@ -532,7 +610,8 @@
           const s = m.cells.find((c) => c?.uid === selected);
           if (s) {
             const item = players.get(s.uid);
-            item?.hls?.destroy();
+            disposePlayer(item);
+            if (item) release([item]);
             players.delete(s.uid);
             attach(s);
           }
@@ -765,7 +844,8 @@
         });
       }
       function buttonIcon(id, symbol, disabled = false) {
-        return `<button class="icon-btn" id="${id}" ${disabled ? "disabled" : ""}>${icon(symbol)}</button>`;
+        const label = id === "wall-prev" ? stateText("Предыдущая страница", "Previous page") : stateText("Следующая страница", "Next page");
+        return `<button class="icon-btn" id="${id}" title="${h(label)}" aria-label="${h(label)}" ${disabled ? "disabled" : ""}>${icon(symbol)}</button>`;
       }
       function save() {
         try {
@@ -800,6 +880,10 @@
           !c ||
           c.protocol !== "dvrip" ||
           !(user.role === "admin" || user.archive_access);
+        on($("#wall-live-audio"), "click", toggleLiveAudio);
+        const audioSlot = m.cells.find((cell) => cell?.uid === selected);
+        const audioSelection = audioSlot ? audioSlot.camera_id + "|" + audioSlot.stream : "";
+        if (audioSelection !== lastAudioSelection) { lastAudioSelection = audioSelection; probeLiveAudio(); }
         if (m.inspector) inspector();
       }
       function inspector() {
@@ -950,79 +1034,107 @@
         if (el)
           el.textContent = `${stateText("Видео", "Video")}: ${states.filter((n) => n.dataset.state === "playing").length} / ${states.length}`;
       }
+      let probesRunning = 0;
+      const probeWaiters = [];
+      async function probeVideo(cell, item) {
+        if (probesRunning >= 4) await new Promise(resolve => probeWaiters.push(resolve));
+        else probesRunning++;
+        try {
+          if (disposed || item.closed) throw new DOMException("Closed", "AbortError");
+          return await H.api("/api/live/capabilities?" + new URLSearchParams({ cam_id: cell.camera_id, stream: cell.stream }), { signal: item.abort.signal });
+        } finally {
+          const next = probeWaiters.shift();
+          if (next) next(); else probesRunning--;
+        }
+      }
       function attach(cell, attempt = 0) {
         if (disposed || players.has(cell.uid)) return;
-        const video = $("#live-video-" + cell.uid),
-          overlay = $("#live-overlay-" + cell.uid),
-          badge = $("#live-status-" + cell.uid);
+        const video = $("#live-video-" + cell.uid), overlay = $("#live-overlay-" + cell.uid), badge = $("#live-status-" + cell.uid);
         if (!video) return;
-        const item = {
-          video,
-          hls: null,
-          stream: cell.stream,
-          camera_id: cell.camera_id,
-        };
+        const item = { video, hls: null, stream: cell.stream, camera_id: cell.camera_id,
+          container: "ts", abort: new AbortController(), closed: false, hevcPlan: null, serverRequested: false };
         players.set(cell.uid, item);
-        const set = (status, text) => {
-          badge.dataset.state = status;
-          badge.textContent = text;
-          summary();
-        };
-        const fail = () => {
-          if (disposed || !video.isConnected) return;
-          set("error", stateText("Нет связи", "Offline"));
+        const current = () => !disposed && !item.closed && video.isConnected && players.get(cell.uid) === item;
+        const set = (status, text) => { badge.dataset.state = status; badge.textContent = text; summary(); };
+        const fail = (message) => {
+          if (disposed || !video.isConnected || players.get(cell.uid) !== item) return;
+          if (audioKey?.camera_id === cell.camera_id) stopAudio(stateText("Звук Live остановлен: видеопоток недоступен", "Live audio stopped: video stream unavailable"));
+          disposePlayer(item); release([item]);
+          set("error", item.hevc ? stateText("HEVC недоступен", "HEVC unavailable") : stateText("Нет связи", "Offline"));
           overlay.hidden = false;
-          overlay.innerHTML = `${icon("camera")}<strong>${stateText("Нет видеосигнала", "No video signal")}</strong><button type="button" class="btn btn-sm">${icon("refresh")}${stateText("Повторить", "Retry")}</button>`;
-          overlay.querySelector("button").onclick = (e) => {
-            e.stopPropagation();
-            item.hls?.destroy();
-            players.delete(cell.uid);
-            attach(cell);
+          overlay.innerHTML = `${icon("camera")}<strong>${stateText("Не удалось открыть камеру", "Camera unavailable")}</strong><small>${h(message || stateText("Нет видеосигнала", "No video signal"))}</small><button type="button" class="btn btn-sm">${icon("refresh")}${stateText("Повторить", "Retry")}</button>`;
+          overlay.querySelector("button").onclick = e => {
+            e.stopPropagation(); disposePlayer(item); release([item]); players.delete(cell.uid); attach(cell);
           };
         };
         set("connecting", stateText("Соединение", "Connecting"));
         overlay.hidden = false;
         overlay.innerHTML = `<span class="spin"></span><strong>${stateText("Подключение", "Connecting")}</strong>`;
-        video.onplaying = () => {
-          overlay.hidden = true;
-          set("playing", "LIVE");
-        };
-        video.onerror = fail;
-        const url = `/live/${encodeURIComponent(cell.camera_id)}/${cell.stream}/index.m3u8?consumer=${consumer}`;
-        if (window.Hls?.isSupported()) {
-          const hls = new Hls({
-            liveSyncDurationCount: 3,
-            lowLatencyMode: false,
-            maxBufferLength: 12,
-          });
-          item.hls = hls;
-          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(fail));
-          hls.on(Hls.Events.ERROR, (_e, data) => {
-            if (!data.fatal || disposed || players.get(cell.uid) !== item)
-              return;
-            hls.destroy();
-            players.delete(cell.uid);
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && attempt < 2)
-              later(() => attach(cell, attempt + 1), 2000 * (attempt + 1));
-            else fail();
-          });
-          hls.loadSource(url);
-          hls.attachMedia(video);
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          video.src = url;
-          video.play().catch(fail);
-        } else fail();
+        video.onplaying = () => { if (current()) { overlay.hidden = true; set("playing", "LIVE"); } };
+        video.onerror = () => fail(item.legacyReason || (item.hevc ? stateText("Браузер не смог декодировать HEVC этой камеры", "The browser could not decode this camera's HEVC stream") : ""));
+        (async () => {
+          try {
+            const capability = await probeVideo(cell, item);
+            if (!current()) return;
+            const metadata = capability.live_video;
+            item.hevc = metadata?.codec === "hevc";
+            item.container = item.hevc ? "fmp4" : "ts";
+            if (item.hevc && [...players.values()].some(other => other !== item && !other.closed && other.hevc && other.camera_id === item.camera_id && other.stream === item.stream))
+              throw new Error(stateText("Этот HEVC-поток уже открыт на видеостене", "This HEVC stream is already open on the video wall"));
+            let plan;
+            if (window.WVWHevc) plan = await window.WVWHevc.prepare(metadata, capability.hevc_support === true);
+            else if (metadata?.codec === "h264") plan = { mode: "h264", container: "ts", attach() {}, release() {} };
+            else throw new Error(stateText("Ресурсы HEVC недоступны или кодек не определён", "HEVC resources are unavailable or the codec is unknown"));
+            if (!current()) { plan.release(); return; }
+            item.hevcPlan = plan; item.container = plan.container;
+            if (plan.mode === "legacy") {
+              item.legacyReason = stateText("Кодек не подтверждён: на сервере отсутствует FFprobe. Установите FFprobe для проверки этого потока.", "The codec is unverified because FFprobe is missing on the server. Install FFprobe to check this stream.");
+              set("connecting", stateText("Обычный режим", "Legacy mode"));
+              overlay.innerHTML = `<span class="spin"></span><strong>${stateText("Обычный режим просмотра", "Legacy playback")}</strong><small>${h(item.legacyReason)}</small>`;
+            }
+            const url = `/live/${encodeURIComponent(cell.camera_id)}/${cell.stream}/index.m3u8?` + new URLSearchParams({ consumer, container: item.container });
+            if (window.Hls?.isSupported()) {
+              const hls = new Hls({ liveSyncDurationCount: 3, lowLatencyMode: false, maxBufferLength: 12,
+                manifestLoadingMaxRetry: 1, levelLoadingMaxRetry: 1, fragLoadingMaxRetry: 1,
+                ...(plan.mode === "plugin" ? { preferManagedMediaSource: false } : {}) });
+              item.hls = hls; plan.attach(hls);
+              hls.on(Hls.Events.MANIFEST_PARSED, () => { if (current()) video.play().catch(() => fail()); });
+              hls.on(Hls.Events.ERROR, (_event, data) => {
+                if (!data.fatal || !current()) return;
+                const denied = [401, 403].includes(data.response?.code);
+                if (!denied && plan.mode !== "legacy" && data.type === Hls.ErrorTypes.NETWORK_ERROR && attempt < 2) {
+                  disposePlayer(item); release([item]); players.delete(cell.uid);
+                  later(() => attach(cell, attempt + 1), 2000 * (attempt + 1));
+                } else fail(denied ? stateText("Доступ к камере отозван", "Camera access was revoked") : item.legacyReason || "");
+              });
+              item.serverRequested = true;
+              hls.loadSource(url); hls.attachMedia(video);
+            } else if (plan.mode !== "plugin" && video.canPlayType("application/vnd.apple.mpegurl")) {
+              item.serverRequested = true;
+              video.src = url; video.play().catch(() => fail());
+            } else fail(stateText("Браузер не поддерживает воспроизведение этого потока", "This browser cannot play this stream"));
+          } catch (reason) {
+            if (reason.name !== "AbortError" && current()) fail(stateText(reason.message || "Не удалось открыть камеру", reason.message || "Camera unavailable"));
+          }
+        })();
       }
       function updateClock() {
         const el = $("#wall-clock");
-        if (el)
-          el.textContent =
-            H.state.branding.show_clock === false
-              ? ""
-              : new Date().toLocaleString(
-                  H.state.language === "en" ? "en-GB" : "ru-RU",
-                );
+        if (!el) return;
+        if (H.state.branding.show_clock === false) { el.textContent = ""; return; }
+        const now = new Date();
+        try {
+          el.textContent = now.toLocaleString(
+            user.language || H.state.language || document.documentElement.lang || "en",
+            { timeZone: user.timezone || settings.timezone || undefined },
+          );
+        } catch (_) {
+          // Old installations can contain a browser-specific, non-IANA zone.
+          el.textContent = now.toLocaleString("en", { timeZone: "UTC" });
+        }
       }
+      on(window, "pagehide", () => stopAudio());
+      on(document, "visibilitychange", () => { if (document.hidden) stopAudio(); });
       on(document, "pointerdown", (e) => {
         if (!e.target.closest(".wall-context")) context?.remove();
       });

@@ -1,0 +1,24 @@
+{
+  "sourceBranchCommit": "d524f4c907702ce56e1c04af3a7d100e154dcfac",
+  "sourceSha256": "ba30b253af38416403d18a90d01a569e3fd385a1a183595ef3fef0e7d884104e",
+  "packages": {
+    "@hevcjs/core": "1.7.0",
+    "@hevcjs/hlsjs-plugin": "0.1.12",
+    "mp4box": "2.4.1",
+    "esbuild": "0.28.2",
+    "hls.js": "1.7.3"
+  },
+  "integration": [
+    "per-codec native bypass",
+    "explicit per-source Worker cleanup"
+  ],
+  "hashes": {
+    "hevc-plugin.js": "854169863f8ef61676b67ed39a7c583551506fe8c60923dd9969b8aa3e2202bc",
+    "hevc/transcode-worker.js": "82bed3c379b352f1cb4cfd2770b14ec90c750176b20fbdc4bf6883918636bef5",
+    "hevc/hevc-decode.js": "12401d76a5063082b9fd1e87ce1069c3ac73d45c2d4e434e32499755b19a99eb",
+    "hevc/hevc-decode.wasm": "450601a71473125e772f01437877eb97abcb3a55332553e205f352f500208a1d",
+    "hevc/HEVC-CORE-LICENSE.txt": "9b3c1a02861d51028709ff474e32154ab9d759494f6072c1eb30a17adb80c975",
+    "hevc/HEVC-PLUGIN-LICENSE.txt": "9b3c1a02861d51028709ff474e32154ab9d759494f6072c1eb30a17adb80c975",
+    "hevc/MP4BOX-LICENSE.txt": "ebad0332150a08f37389158289d93ab2f70b0ee8717d1db9b3d002febc6c5047"
+  }
+}

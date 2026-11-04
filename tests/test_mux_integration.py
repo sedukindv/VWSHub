@@ -8,6 +8,7 @@ required. Scratch data lives outside the distributable project.
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
 import struct
@@ -56,6 +57,79 @@ def synthetic_clip(ffmpeg_binary):
         yield folder, clip.read_bytes()
     finally:
         shutil.rmtree(folder)
+
+
+@pytest.mark.parametrize('codec,container,encoder',[('h264','ts','libx264'),('hevc','fmp4','libx265')])
+def test_real_live_copy_preserves_codec_and_decoded_frames(ffmpeg_binary,synthetic_clip,monkeypatch,codec,container,encoder):
+    """Real LiveManager command, local input substituted only for synthetic RTSP."""
+    ffprobe=shutil.which('ffprobe')
+    if not ffprobe:pytest.skip('Install ffprobe for factual codec/container validation')
+    folder,_=synthetic_clip
+    source=folder/(codec+'-live-source.mp4')
+    command=[ffmpeg_binary,'-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc=size=320x180:rate=10:duration=3',
+             '-an','-pix_fmt','yuv420p','-c:v',encoder,'-threads','1','-preset','ultrafast','-g','10','-bf','0']
+    if codec=='hevc':command+=['-x265-params','pools=1:frame-threads=1:keyint=10:min-keyint=10:scenecut=0:log-level=error','-tag:v','hvc1']
+    command+=[str(source)]
+    generated=subprocess.run(command,capture_output=True,timeout=30)
+    assert generated.returncode==0,generated.stderr.decode(errors='replace')
+    manager=media.LiveManager(folder/('live-'+container))
+    original_which=media.shutil.which;original_popen=media.subprocess.Popen
+    monkeypatch.setattr(media.shutil,'which',lambda name:ffmpeg_binary if name=='ffmpeg' else original_which(name))
+    monkeypatch.setattr(media,'get_camera',lambda camera_id:{'id':camera_id})
+    monkeypatch.setattr(media,'resources',lambda:{'max_live_streams':4,'ffmpeg_threads':1})
+    monkeypatch.setattr(media,'build_rtsp_live_url',lambda *args:'rtsp://synthetic.invalid/test')
+    captured=[]
+    def local_transport(command,*args,**kwargs):
+        # Keep the production FFmpeg command for assertions; only replace network
+        # acquisition with a generated file. No socket or physical device is used.
+        if '-rtsp_transport' in command:
+            captured.append(list(command));command=list(command)
+            position=command.index('-rtsp_transport');del command[position:position+2]
+            command[command.index('-i')+1]=str(source)
+        return original_popen(command,*args,**kwargs)
+    monkeypatch.setattr(media.subprocess,'Popen',local_transport)
+    try:
+        stream=manager.ensure('synthetic-'+codec,'sub','test:wall',container)
+        assert stream['process'].wait(timeout=20)==0,(stream['directory']/'ffmpeg.log').read_text(errors='replace')
+        assert captured[0][captured[0].index('-c:v')+1]=='copy'
+        assert captured[0][captured[0].index('-rtsp_transport')+1]=='tcp' and '-rw_timeout' not in captured[0]
+        playlist=(stream['directory']/'index.m3u8').read_text()
+        segments=[line for line in playlist.splitlines() if line and not line.startswith('#')]
+        assert segments
+        if container=='fmp4':
+            assert '#EXT-X-MAP:URI="init.mp4"' in playlist
+            assert all(name.endswith('.m4s') for name in segments)
+            payload=(stream['directory']/'init.mp4').read_bytes()
+        else:
+            assert '#EXT-X-MAP' not in playlist and all(name.endswith('.ts') for name in segments)
+            payload=b''
+        payload+=b''.join((stream['directory']/name).read_bytes() for name in segments)
+        output=folder/('live-result-'+codec+('.mp4' if container=='fmp4' else '.ts'))
+        output.write_bytes(payload)
+        probe=subprocess.run([ffprobe,'-v','error','-count_frames','-show_entries','stream=codec_name,codec_tag_string,width,height,nb_read_frames,extradata',
+                              '-show_data','-of','json',str(output)],capture_output=True,timeout=15)
+        assert probe.returncode==0,probe.stderr.decode(errors='replace')
+        video=json.loads(probe.stdout)['streams'][0]
+        assert (video['codec_name'],video['width'],video['height'],int(video['nb_read_frames']))==(codec,320,180,30)
+        if codec=='hevc':
+            assert video['codec_tag_string']=='hvc1'
+            exact_codec=media.hevc_codec_string(video['extradata'])
+            assert exact_codec.startswith('hvc1.')
+            elementary=folder/'actual-rtsp-style-extradata.hevc'
+            converted=subprocess.run([ffmpeg_binary,'-hide_banner','-loglevel','error','-y','-i',str(source),'-c:v','copy',
+                                      '-bsf:v','hevc_mp4toannexb','-f','hevc',str(elementary)],capture_output=True,timeout=15)
+            assert converted.returncode==0
+            annex_probe=subprocess.run([ffprobe,'-v','error','-show_entries','stream=extradata','-show_data','-of','json',str(elementary)],capture_output=True,timeout=15)
+            assert annex_probe.returncode==0
+            assert media.hevc_codec_string(json.loads(annex_probe.stdout)['streams'][0]['extradata'])==exact_codec
+        def decoded_hashes(path):
+            result=subprocess.run([ffmpeg_binary,'-hide_banner','-loglevel','error','-i',str(path),'-map','0:v:0','-f','framemd5','-'],capture_output=True,timeout=20)
+            assert result.returncode==0,result.stderr.decode(errors='replace')
+            return [line.rsplit(',',1)[-1].strip() for line in result.stdout.decode().splitlines() if line and not line.startswith('#')]
+        assert decoded_hashes(source)==decoded_hashes(output)
+    finally:
+        manager.stop_all()
+    assert not manager.streams
 
 
 def netip_video(payload, stamp):
@@ -140,11 +214,11 @@ def mux_pipeline(monkeypatch, ffmpeg_binary, synthetic_clip):
         assert not service.operations
 
 
-def read_response(pipeline, start=START, end=END, attachment=False):
+def read_response(pipeline, start=START, end=END, attachment=False, export_format=None):
     with pipeline.app.test_request_context('/?play_id=mux_integration_123'):
         session['archive_consumer'] = 'synthetic-viewer'
         response = media.create_archive_response(
-            pipeline.camera, pipeline.records, start, end, as_attachment=attachment)
+            pipeline.camera, pipeline.records, start, end, as_attachment=attachment, export_format=export_format)
         assert not isinstance(response, tuple), response
         assert response.status_code == 200
         assert pipeline.service.active_archives == 1
@@ -223,6 +297,9 @@ def test_download_trims_selected_cross_file_range_and_releases_slot(mux_pipeline
     assert '20261029_120002-20261029_120005.mp4' in headers['Content-Disposition']
     assert len(pipeline.commands) == 1
     command = pipeline.commands[0]
+    assert command.count("-threads") == 2
+    assert all(command[i + 1] == "1" for i, value in enumerate(command) if value == "-threads")
+    assert "-rw_timeout" not in command
     assert float(command[command.index('-t') + 1]) == 3
     assert float(command[command.index('-ss') + 1]) == 2
     frame_count, seconds = decode_mp4(pipeline, content)
@@ -246,3 +323,78 @@ def test_closing_real_mux_response_before_consuming_releases_slot(mux_pipeline):
         assert pipeline.service.active_archives == 0
         assert not pipeline.service.operations
     assert all(connection.close.called for connection in pipeline.connections)
+
+
+@pytest.mark.parametrize('export_format,extension,container,codec',[('avi','avi','avi','mpeg4'),('original','h264','h264','h264')])
+def test_real_additional_exports_are_valid_containers_and_decodable(mux_pipeline,export_format,extension,container,codec):
+    pipeline=mux_pipeline
+    content,headers=read_response(pipeline,attachment=True,export_format=export_format)
+    assert headers['Content-Disposition'].endswith('.'+extension+'"')
+    if export_format=='avi':assert content[:4]==b'RIFF' and content[8:12]==b'AVI '
+    else:assert content.startswith((b'\x00\x00\x00\x01',b'\x00\x00\x01'))
+    output=pipeline.folder/(uuid.uuid4().hex+'.'+extension);output.write_bytes(content)
+    probe=shutil.which('ffprobe')
+    if probe:
+        result=subprocess.run([probe,'-v','error','-show_entries','format=format_name:stream=codec_name','-of','json',str(output)],capture_output=True,timeout=20)
+        assert result.returncode==0,result.stderr
+        metadata=json.loads(result.stdout)
+        assert metadata['format']['format_name']==container
+        assert metadata['streams'][0]['codec_name']==codec
+    frame_count,_=decode_mp4(pipeline,content)
+    assert frame_count==90
+
+
+def test_original_hevc_is_real_h265_elementary_stream(mux_pipeline,monkeypatch):
+    pipeline=mux_pipeline
+    clip=pipeline.folder/'source.hevc'
+    result=subprocess.run([pipeline.ffmpeg,'-hide_banner','-loglevel','error','-f','lavfi','-i',f'testsrc=size={WIDTH}x{HEIGHT}:rate={FPS}:duration=3',
+        '-an','-c:v','libx265','-pix_fmt','yuv420p','-threads','1','-x265-params','pools=1:frame-threads=1:log-level=error','-f','hevc',str(clip)],capture_output=True,timeout=30)
+    assert result.returncode==0,result.stderr
+    def chunks(_connection,path,left,right,**kwargs):
+        wire=bytearray(netip_video(clip.read_bytes(),START));wire[4]=3
+        yield bytes(wire)
+    monkeypatch.setattr(media,'dvrip_playback_chunks',chunks)
+    pipeline.records=pipeline.records[:1]
+    content,headers=read_response(pipeline,end=MIDDLE,attachment=True,export_format='original')
+    assert headers['Content-Disposition'].endswith('.h265"') and headers['Content-Type'].startswith('video/h265')
+    assert content.startswith((b'\x00\x00\x00\x01',b'\x00\x00\x01'))
+    output=pipeline.folder/'export.h265';output.write_bytes(content)
+    probe=shutil.which('ffprobe')
+    if probe:
+        checked=subprocess.run([probe,'-v','error','-show_entries','stream=codec_name','-of','json',str(output)],capture_output=True,timeout=20)
+        assert checked.returncode==0 and json.loads(checked.stdout)['streams'][0]['codec_name']=='hevc'
+    frames,_=decode_mp4(pipeline,content)
+    assert frames==45
+
+
+def test_real_live_audio_pipeline_transcodes_alaw_to_aac_hls(mux_pipeline,monkeypatch):
+    pipeline=mux_pipeline
+    source=pipeline.folder/'microphone.wav'
+    generated=subprocess.run([pipeline.ffmpeg,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=800:sample_rate=8000:duration=3','-c:a','pcm_alaw',str(source)],capture_output=True,timeout=20)
+    assert generated.returncode==0,generated.stderr
+    observed=[];real_popen=subprocess.Popen
+    def launch(command,*args,**kwargs):
+        observed.append(list(command))
+        local=list(command)
+        if '-rtsp_transport' in local:
+            transport=local.index('-rtsp_transport');del local[transport:transport+2]
+            local[local.index('-i')+1]=str(source)
+        return real_popen(local,*args,**kwargs)
+    monkeypatch.setattr(media.subprocess,'Popen',launch)
+    with pipeline.app.test_request_context():
+        item=pipeline.service.live.ensure(pipeline.camera['id'],'audio-main','synthetic-viewer:audio')
+        assert item['process'].wait(timeout=20)==0
+        playlist=item['directory']/'index.m3u8'
+        assert playlist.exists() and '#EXTINF:' in playlist.read_text()
+        segments=list(item['directory'].glob('seg_*.ts'))
+        assert segments
+        probe=shutil.which('ffprobe')
+        if probe:
+            checked=subprocess.run([probe,'-v','error','-show_entries','stream=codec_name,codec_type','-of','json',str(segments[0])],capture_output=True,timeout=20)
+            assert checked.returncode==0
+            streams=json.loads(checked.stdout)['streams']
+            assert any(stream['codec_name']=='aac' and stream['codec_type']=='audio' for stream in streams)
+            assert not any(stream['codec_type']=='video' for stream in streams)
+        pipeline.service.live.release(pipeline.camera['id'],'audio-main','synthetic-viewer:audio')
+        assert not pipeline.service.live.streams
+    assert '0:a:0' in observed[0] and '-vn' in observed[0]

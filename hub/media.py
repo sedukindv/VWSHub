@@ -6,6 +6,7 @@ Only recorder-confirmed files are exposed; all media routes apply group + archiv
 from __future__ import annotations
 import atexit
 import json
+import hashlib
 import logging
 import math
 import os
@@ -20,10 +21,11 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from flask import Blueprint, Response, current_app, jsonify, request, send_from_directory, session, stream_with_context
 from .access import features
+from .failures import failure_details
 from werkzeug.utils import secure_filename
 try:
     from dvrip import DVRIPCam
@@ -45,11 +47,28 @@ def resources():
             'archive_idle_seconds':int(configured.get('archive_idle_seconds',180)),
             'ffmpeg_threads':int(configured.get('ffmpeg_threads',2))}
 
+def live_failure_details(item):
+    try:
+        with (item["directory"]/"ffmpeg.log").open("rb") as stream:
+            stream.seek(0,2); size=stream.tell(); stream.seek(max(0,size-4096))
+            return failure_details(output=stream.read(4096).decode(errors="replace"))
+    except OSError:
+        return failure_details()
+
+def remember_media_health(rt,cam,**evidence):
+    from .store import DataStore
+    health=vars(rt).setdefault("device_health",{})
+    target=health.setdefault(DataStore.connection_key(cam),{})
+    for key,value in evidence.items():
+        if key in {"live_audio_sources","archive_sources"}:target.setdefault(key,{}).update(value)
+        else:target[key]=value
+
 def hardware_event(rt,event,camera,**details):
     journal=getattr(rt,'hardware',None)
     if journal:journal.record(event,camera,**details)
 
 def build_rtsp_live_url(cam, stream_type="main"):
+    stream_type=stream_type.removeprefix("audio-")
     proto = cam.get("protocol", "dvrip")
     ip = cam["ip"]
     user = cam.get("username", "")
@@ -64,7 +83,8 @@ def build_rtsp_live_url(cam, stream_type="main"):
         return (f"rtsp://{user_enc}:{pass_enc}@{ip}:{rtsp_port}/"
                 f"user={user}&password={pwd}"
                 f"&channel={channel + 1}&stream={s}.sdp?real_stream")
-    path = cam.get("rtsp_path", "").strip()
+    path = (cam.get("rtsp_sub_path") if stream_type == "sub" else None) or cam.get("rtsp_path", "")
+    path=path.strip()
     if path and not path.startswith("/"): path = "/" + path
     host=cam.get('rtsp_host') or ip
     if ':' in host:host='['+host+']'
@@ -117,19 +137,22 @@ class LiveManager:
         except Exception: pass
         shutil.rmtree(item["directory"], ignore_errors=True)
 
-    def stop(self, cam_id, stream):
-        with self.lock: self._stop_locked((cam_id, stream))
+    def stop(self, cam_id, stream, container=None):
+        with self.lock:
+            for key in list(self.streams):
+                if key[:2]==(cam_id,stream) and (container is None or key[2]==container):self._stop_locked(key)
 
-    def release(self, cam_id, stream, consumer):
+    def release(self, cam_id, stream, consumer, container="ts"):
         """Release this browser's lease; other browsers keep their shared stream."""
         with self.lock:
-            item = self.streams.get((cam_id, stream))
+            key=(cam_id,stream,container)
+            item = self.streams.get(key)
             if not item: return
             leases = item.setdefault("leases", {})
             leases.pop(consumer, None)
             cutoff = time.monotonic() - 30
             if not any(seen > cutoff for seen in leases.values()):
-                self._stop_locked((cam_id, stream))
+                self._stop_locked(key)
 
     def reap(self):
         """Bound abandoned FFmpeg processes even when a browser closes abruptly."""
@@ -144,15 +167,17 @@ class LiveManager:
         with self.lock:
             for k in list(self.streams): self._stop_locked(k)
 
-    def ensure(self, cam_id, stream, consumer="legacy"):
-        if stream not in ("main", "sub"): raise ValueError("Поток: main или sub")
+    def ensure(self, cam_id, stream, consumer="legacy", container="ts"):
+        if stream not in ("main", "sub", "audio-main", "audio-sub"): raise ValueError("Неизвестный профиль Live")
+        if container not in ("ts","fmp4") or (stream.startswith("audio-") and container!="ts"):raise ValueError("Формат Live: ts или fmp4; звук поддерживает ts")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(cam_id)): raise ValueError("Некорректный идентификатор камеры")
         cam = get_camera(cam_id)
         if not cam: raise ValueError("Камера не найдена")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg: raise RuntimeError("FFmpeg не установлен")
+        limits=resources()
 
-        key = (cam_id, stream)
+        key = (cam_id, stream, container)
         with self.lock:
             for expired,item in list(self.streams.items()):
                 if item['process'].poll() is not None:self._stop_locked(expired)
@@ -162,23 +187,36 @@ class LiveManager:
                 return ex
             if ex: self._stop_locked(key)
 
-            if len(self.streams)>=resources()["max_live_streams"]: raise RuntimeError("Достигнут лимит одновременных потоков сервера")
-            directory = self.root / f"{cam_id}_{stream}"
+            audio_only=stream.startswith("audio-")
+            count=sum(key[1].startswith("audio-")==audio_only for key in self.streams)
+            limit=min(4,limits["max_live_streams"]) if audio_only else limits["max_live_streams"]
+            if count>=limit: raise RuntimeError("Достигнут лимит одновременных потоков сервера")
+            directory = self.root / f"{cam_id}_{stream}_{container}"
             shutil.rmtree(directory, ignore_errors=True)
             directory.mkdir(parents=True, exist_ok=True)
             log_file = open(directory / "ffmpeg.log", "ab", buffering=0)
 
-            cmd = [
-                ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning",
-                "-rtsp_transport", "tcp", "-i", build_rtsp_live_url(cam, stream),
-                "-map", "0:v:0", "-an", "-c:v", "copy",
-                "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
-                "-hls_delete_threshold", "2",
-                "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
-                "-hls_segment_filename", str(directory / "seg_%06d.ts"),
-                str(directory / "index.m3u8"),
-            ]
-            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log_file)
+            cmd = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning",
+                   "-threads", str(limits["ffmpeg_threads"]),
+                   "-rtsp_transport", "tcp", "-i", build_rtsp_live_url(cam, stream)]
+            if stream.startswith("audio-"):
+                cmd += ["-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "96k",
+                        "-threads", str(limits["ffmpeg_threads"])]
+            else:
+                cmd += ["-map", "0:v:0", "-an", "-c:v", "copy"]
+            cmd += ["-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
+                    "-hls_delete_threshold", "2",
+                    "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments"]
+            if container=="fmp4":
+                cmd += ["-tag:v","hvc1","-hls_segment_type","fmp4","-hls_fmp4_init_filename","init.mp4",
+                        "-hls_segment_filename",(directory/"seg_%06d.m4s").as_posix()]
+            else:cmd += ["-hls_segment_filename",(directory/"seg_%06d.ts").as_posix()]
+            # FFmpeg's HLS URI path handling needs forward slashes on Windows
+            # as well; backslashes can place init.mp4 in the process cwd.
+            cmd += [(directory/"index.m3u8").as_posix()]
+            try:proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log_file)
+            except OSError:
+                log_file.close();shutil.rmtree(directory,ignore_errors=True);raise
             item = {"process": proc, "directory": directory, "log_file": log_file, "leases": {consumer: time.monotonic()}}
             self.streams[key] = item
             return item
@@ -580,6 +618,28 @@ def iter_dvr_audio_frames(chunks, metadata=None):
             yield 'alaw',payload
 
 
+def hevc_codec_string(extradata):
+    """RFC 6381 from the actual hvcC or Annex-B SPS profile_tier_level bytes."""
+    try:
+        chunks=[]
+        for line in str(extradata).splitlines():
+            if ':' in line:
+                value=line.split(':',1)[1].strip().split('  ',1)[0].replace(' ','')
+                if re.fullmatch(r'[0-9a-fA-F]+',value):chunks.append(bytes.fromhex(value))
+        data=b''.join(chunks)
+        if len(data)>=13 and data[0]==1:
+            profile=data[1];compat=data[2:6];constraints=data[6:12];level=data[12]
+        else:
+            sps=next((nal for nal in re.split(b'\x00\x00(?:\x00)?\x01',data) if len(nal)>=15 and (nal[0]>>1)&63==33),None)
+            if not sps:return None
+            rbsp=sps[:2]+sps[2:].replace(b'\x00\x00\x03',b'\x00\x00')
+            profile=rbsp[3];compat=rbsp[4:8];constraints=rbsp[8:14];level=rbsp[14]
+        compatibility=int(f'{int.from_bytes(compat,"big"):032b}'[::-1],2)
+        constraint='.'.join(f'{byte:02X}' for byte in constraints.rstrip(b'\x00'))
+        return f'hvc1.{["","A","B","C"][profile>>6]}{profile&31}.{compatibility:X}.{"H" if profile&32 else "L"}{level}'+('.'+constraint if constraint else '')
+    except (ValueError,IndexError,TypeError):return None
+
+
 class MediaService:
     def __init__(self, app, rt):
         self.runtime=rt
@@ -587,6 +647,11 @@ class MediaService:
         self.active_archives=0
         self.files={}
         self.audio_cache={}
+        self.live_audio_cache={}
+        self.live_probe_cache={}
+        self.live_probe_pending={}
+        self.live_audio_probe_slots=threading.BoundedSemaphore(4)
+        self.audio_start_lock=threading.RLock()
         self.operations={}
         self.cancelled={}
         self.reconcile_lock=threading.Lock()
@@ -600,7 +665,10 @@ class MediaService:
         for operation in operations:operation['cancel']()
 
     def stats(self):
-        with self.lock:return {'live_streams':len(self.live.streams),'archive_streams':self.active_archives}
+        with self.live.lock:
+            video=sum(not key[1].startswith('audio-') for key in self.live.streams)
+            audio=sum(key[1].startswith('audio-') for key in self.live.streams)
+        with self.lock:return {'live_streams':video,'live_audio_streams':audio,'archive_streams':self.active_archives}
 
     def reconcile_permissions(self):
         """Drop revoked consumers while retaining streams used by other accounts."""
@@ -687,6 +755,85 @@ class MediaService:
         if not matches:raise ValueError('Нет файла выбранного канала в этом диапазоне. Обновите архив.')
         return sorted(matches,key=lambda r:(r['BeginTime'],r['FilePath']))
 
+    def live_stream_probe(self,cam,stream="main",refresh=False):
+        """One bounded RTSP metadata connection for both video and audio per profile."""
+        if stream not in {"main","sub"}:raise ValueError("Поток: main или sub")
+        address=build_rtsp_live_url(cam,stream)
+        signature=hashlib.sha256(address.encode()).hexdigest()
+        key=(str(cam['id']),stream,signature)
+        with self.lock:
+            cached=self.live_probe_cache.get(key)
+            if cached and cached[0]>time.monotonic()-(5 if refresh else 30):return dict(cached[1])
+            pending=self.live_probe_pending.get(key)
+            if not pending:self.live_probe_pending[key]=threading.Event()
+        if pending:
+            pending.wait(9)
+            with self.lock:cached=self.live_probe_cache.get(key)
+            return dict(cached[1]) if cached else {'streams':[],'reason':'Проверка Live занята. Повторите позже'}
+        ffprobe=shutil.which("ffprobe")
+        result={'streams':[]}
+        began=time.monotonic()
+        acquired=False
+        try:
+            if not ffprobe:result.update(reason='FFprobe не установлен: кодек не подтверждён. Доступен обычный режим просмотра.',reason_code='ffprobe_unavailable')
+            elif not self.live_audio_probe_slots.acquire(blocking=False):result['reason']='Проверка Live занята. Повторите позже'
+            else:
+                acquired=True
+                probe=subprocess.run([ffprobe,'-v','error','-rtsp_transport','tcp','-analyzeduration','3000000','-probesize','1048576',
+                    '-i',address,'-show_entries','stream=codec_name,codec_type,width,height,avg_frame_rate,r_frame_rate,profile,level,bit_rate,extradata',
+                    '-show_data','-of','json'],capture_output=True,timeout=8)
+                if probe.returncode:result['reason']='Не удалось подтвердить метаданные этого Live-профиля'
+                else:
+                    data=json.loads(probe.stdout)
+                    result['streams']=[entry for entry in data.get('streams',[]) if isinstance(entry,dict)]
+        except subprocess.TimeoutExpired:
+            result['reason']='Истекло время проверки профиля Live'
+        except (ValueError,OSError,TypeError,AttributeError):
+            result['reason']='Не удалось проверить профиль Live'
+        finally:
+            if acquired:self.live_audio_probe_slots.release()
+            with self.lock:
+                if len(self.live_probe_cache)>=512:self.live_probe_cache.clear()
+                # Missing tools may be installed without restarting; do not cache their absence.
+                if ffprobe:self.live_probe_cache[key]=(time.monotonic(),dict(result))
+                event=self.live_probe_pending.pop(key,None)
+                if event:event.set()
+        hardware_event(self.runtime,'live.profile_probe',cam,stream=stream,duration_ms=round((time.monotonic()-began)*1000),
+                       codecs=[str(entry.get('codec_name','unknown'))[:30] for entry in result['streams']])
+        return result
+
+    def live_video_capabilities(self,cam,stream='main',refresh=False):
+        probe=self.live_stream_probe(cam,stream,refresh)
+        video=next((entry for entry in probe['streams'] if entry.get('codec_type')=='video'),{})
+        codec={'h264':'h264','hevc':'hevc','h265':'hevc'}.get(str(video.get('codec_name','')).lower(),'unknown')
+        fps=0
+        for rate in ('avg_frame_rate','r_frame_rate'):
+            try:
+                numerator,denominator=str(video.get(rate,'0/1')).split('/')
+                fps=float(numerator)/float(denominator)
+            except (ValueError,ZeroDivisionError):continue
+            if 0<fps<=240:break
+        return {'stream':stream,'codec':codec,'container':'fmp4' if codec=='hevc' else 'mpegts',
+                'codec_string':hevc_codec_string(video.get('extradata','')) if codec=='hevc' else None,
+                'width':int(video.get('width') or 0),'height':int(video.get('height') or 0),
+                'framerate':fps if 0<fps<=240 else 0,'bitrate':int(video.get('bit_rate') or 0),
+                'reason':probe.get('reason','') if codec!='unknown' else probe.get('reason','Кодек этого Live-профиля не определён'),
+                'reason_code':probe.get('reason_code',''),
+                'legacy_ts_allowed':codec=='unknown' and probe.get('reason_code')=='ffprobe_unavailable'}
+
+    def live_audio_capabilities(self,cam,stream="main",refresh=False):
+        probe=self.live_stream_probe(cam,stream,refresh)
+        audio=next((entry for entry in probe['streams'] if entry.get('codec_type')=='audio' and entry.get('codec_name')),None)
+        ffmpeg_available=bool(shutil.which('ffmpeg'))
+        result={'supported':bool(audio) and ffmpeg_available,'kind':'live_audio','stream':stream,'codec':audio.get('codec_name') if audio else None,
+                'reason':('FFmpeg не установлен: воспроизведение звука Live недоступно' if audio and not ffmpeg_available else probe.get('reason')) or
+                         ('Аудиодорожка этого Live-профиля подтверждена' if audio else 'В этом Live-профиле аудиодорожка отсутствует')}
+        remember_media_health(self.runtime,cam,live_audio_sources={str(cam["id"])+"|"+stream:{"checked":time.monotonic(),"supported":result["supported"]}})
+        with self.lock:
+            if len(self.live_audio_cache)>=512:self.live_audio_cache.clear()
+            self.live_audio_cache[(str(cam['id']),stream)]=(time.monotonic(),dict(result))
+        return result
+
     def audio_capabilities(self,cam,refresh=False):
         key=str(cam['id'])
         with self.lock:cached=self.audio_cache.get(key)
@@ -726,7 +873,7 @@ def _write_all(stream, payload, cancel=None):
     return True
 
 
-def create_archive_response(cam_info, records, start, end, as_attachment=False, audio=False):
+def create_archive_response(cam_info, records, start, end, as_attachment=False, audio=False, export_format=None):
     """Stream sequential recorder files through one bounded remux pipeline.
 
     DownloadStart asks the recorder for its fastest file transfer (no realtime
@@ -736,6 +883,8 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     ffmpeg=shutil.which('ffmpeg')
     if not ffmpeg:return jsonify(error='FFmpeg не установлен'),503
     service=current_app.extensions['vwshub_media'];limits=resources()
+    export_format=(export_format or service.runtime.settings().get('archive_format','mp4')) if as_attachment else 'mp4'
+    if export_format not in {'mp4','avi','original'}:return jsonify(error='Формат архива: mp4, avi или original'),400
     policy_user=service.runtime.current_user()
     policy_name=policy_user.get('username') if policy_user else None
     policy_epoch=service.runtime.settings().get('auth_epoch')
@@ -759,7 +908,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     idle=max(30,min(600,limits['archive_idle_seconds']))
     chunks=queue.Queue(maxsize=max(8,min(4096,int(limits['archive_buffer_mb'])*32)))
     cancelled=threading.Event();lock=threading.Lock()
-    state={'cam':None,'proc':None,'worker':None,'cleaned':False,'error':None,'metadata':{},'frames':0,'bytes_out':0}
+    state={'cam':None,'proc':None,'worker':None,'cleaned':False,'error':None,'metadata':{},'frames':0,'bytes_out':0,'extension':'mp4','mime':'video/mp4','error_status':502}
     began=time.monotonic()
     hardware_event(service.runtime,'archive.open',cam_info,start=start,end=end,files=len(records),audio=audio,download=as_attachment)
     def close_cam():
@@ -836,6 +985,13 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
             if first is not None:state['frames']=1
             if first is None:raise RuntimeError('В записи нет поддерживаемого звука' if audio else 'Регистратор не передал видеокадры')
             fmt,data=first
+            if as_attachment and export_format=='original':
+                if fmt not in {'h264','hevc'}:
+                    state['error_status']=415
+                    state['error']='Оригинальный экспорт доступен только для подтверждённого H.264/H.265'
+                    raise ValueError(state['error'])
+                state.update(extension='h264' if fmt=='h264' else 'h265',mime='video/h264' if fmt=='h264' else 'video/h265')
+            elif as_attachment and export_format=='avi':state.update(extension='avi',mime='video/x-msvideo')
             cmd=[ffmpeg,'-hide_banner','-loglevel','error','-fflags','+genpts+discardcorrupt','-err_detect','ignore_err','-probesize','32768','-analyzeduration','0','-f',fmt]
             if audio:cmd+=['-ar','8000','-ac','1']
             elif 1<=metadata.get('fps',0)<=120:
@@ -843,7 +999,7 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                 # 25fps. Wrapper FPS supplies its fallback when SPS/VUI timing
                 # is absent; do not force an output rate or duplicate frames.
                 cmd+=['-framerate',str(metadata['fps'])]
-            cmd+=['-i','pipe:0']
+            cmd+=['-threads',str(limits['ffmpeg_threads']),'-i','pipe:0','-threads',str(limits['ffmpeg_threads'])]
             # ByName firmware may start at the file's first keyframe even when
             # StartTime was supplied. Trim generated media timestamps only when
             # the recorder's wrapper confirms an earlier actual start.
@@ -853,6 +1009,8 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
                 if offset>1:cmd+=['-ss',str(offset)]
             if as_attachment:cmd+=['-t',str((datetime.strptime(end,'%Y-%m-%d %H:%M:%S')-datetime.strptime(start,'%Y-%m-%d %H:%M:%S')).total_seconds())]
             if audio:cmd+=['-vn','-c:a','aac','-b:a','64k','-f','adts','pipe:1']
+            elif as_attachment and export_format=='original':cmd+=['-map','0:v:0','-c:v','copy','-an','-f',fmt,'pipe:1']
+            elif as_attachment and export_format=='avi':cmd+=['-map','0:v:0','-c:v','mpeg4','-q:v','4','-pix_fmt','yuv420p','-an','-f','avi','pipe:1']
             else:cmd+=['-map','0:v:0','-c:v','copy','-an','-movflags','frag_keyframe+empty_moov+default_base_moof','-frag_duration','1000000','-flush_packets','1','-f','mp4','pipe:1']
             proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
             with lock:state['proc']=proc
@@ -872,7 +1030,8 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
             threading.Thread(target=errors,daemon=True,name='archive-stderr').start()
             reader=threading.Thread(target=output,daemon=True,name='archive-output');reader.start()
             if not _write_all(proc.stdin,data,cancelled):return
-            for _,data in frames:
+            for next_fmt,data in frames:
+                if next_fmt!=fmt:raise RuntimeError('Кодек записи изменился внутри выбранного фрагмента')
                 state['frames']+=1
                 if cancelled.is_set() or proc.poll() is not None:break
                 if not _write_all(proc.stdin,data,cancelled):break
@@ -884,12 +1043,14 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
             while not cancelled.is_set():
                 try:proc.wait(timeout=.25);break
                 except subprocess.TimeoutExpired:continue
+            if not cancelled.is_set() and isinstance(proc.poll(),int) and proc.poll()!=0:
+                raise RuntimeError("FFmpeg завершился с ошибкой")
             while reader and reader.is_alive() and not cancelled.is_set():
                 reader.join(timeout=.25)
         except Exception as exc:
             if not cancelled.is_set():
-                hardware_event(service.runtime,'archive.failed',cam_info,level='error',error_type=type(exc).__name__)
-                state['error']='Не удалось прочитать архив. Проверьте регистратор, канал и доступность записи.'
+                hardware_event(service.runtime,'archive.failed',cam_info,level='error',stage='archive_transfer',**failure_details(exc))
+                state['error']=state['error'] or 'Не удалось прочитать архив. Проверьте регистратор, канал и доступность записи.'
                 log.warning('Archive transfer failed for device %s: %s',cam_info.get('id'),type(exc).__name__)
         finally:
             if frames:
@@ -916,7 +1077,8 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     try:first=chunks.get(timeout=min(90,idle))
     except queue.Empty:cleanup();return jsonify(error='Регистратор долго не отвечает. Повторите запрос или уменьшите период.'),504
     if first is None:
-        message=state['error'] or 'В записи нет поддерживаемого медиа';cleanup();return jsonify(error=message),502
+        message=state['error'] or 'В записи нет поддерживаемого медиа';cleanup();return jsonify(error=message),state['error_status']
+    remember_media_health(service.runtime,cam_info,archive_sources={str(cam_info["id"]):time.monotonic()})
     def generate():
         try:
             if not policy_allowed():return
@@ -936,8 +1098,9 @@ def create_archive_response(cam_info, records, start, end, as_attachment=False, 
     if as_attachment:
         name=secure_filename(str(cam_info.get('name') or cam_info['id'])) or 'camera'
         stamp=lambda t:datetime.strptime(t,'%Y-%m-%d %H:%M:%S').strftime('%Y%m%d_%H%M%S')
-        headers['Content-Disposition']=f'attachment; filename="{name}_{stamp(start)}-{stamp(end)}.mp4"'
-    response=Response(stream_with_context(generate()),mimetype='audio/aac' if audio else 'video/mp4',headers=headers)
+        extension=state['extension']
+        headers['Content-Disposition']=f'attachment; filename="{name}_{stamp(start)}-{stamp(end)}.{extension}"'
+    response=Response(stream_with_context(generate()),mimetype='audio/aac' if audio else state['mime'],headers=headers)
     response.call_on_close(cleanup)
     return response
 
@@ -968,44 +1131,98 @@ def register_media(app, rt):
             return rt.current_user()['username']+':'+value
         if 'live_consumer' not in session:session['live_consumer']=uuid.uuid4().hex
         return rt.current_user()['username']+':'+session['live_consumer']
+    @bp.get('/api/live/audio/capabilities')
+    def live_audio_capabilities():
+        cam,err=authorized(request.args.get('cam_id'))
+        if err:return err
+        try:return jsonify(live_audio=service.live_audio_capabilities(cam,request.args.get('stream','main'),request.args.get('refresh')=='1'))
+        except ValueError as exc:return jsonify(error=str(exc)),400
+    @bp.get('/api/live/capabilities')
+    def live_video_capabilities():
+        cam,err=authorized(request.args.get('cam_id'))
+        if err:return err
+        try:return jsonify(live_video=service.live_video_capabilities(cam,request.args.get('stream','main')),
+                           hevc_support=rt.settings().get('hevc_support') is True)
+        except ValueError as exc:return jsonify(error=str(exc)),400
     @bp.post('/api/live/stop')
     def stop_live():
-        body=request.get_json(silent=True) or {};cam,err=authorized(body.get('cam_id'))
+        body=request.get_json(silent=True)
+        if not isinstance(body,dict):return jsonify(error='Ожидается JSON-объект'),400
+        cam,err=authorized(body.get('cam_id'))
         if err:return err
-        service.live.release(cam['id'],body.get('stream','main'),live_consumer(body.get('consumer')))
+        stream=body.get('stream','main')
+        if not isinstance(stream,str) or stream not in {'main','sub','audio-main','audio-sub'}:
+            return jsonify(error='Неизвестный профиль Live'),400
+        container=body.get('container','ts')
+        if not isinstance(container,str) or container not in {'ts','fmp4'} or (stream.startswith('audio-') and container!='ts'):
+            return jsonify(error='Неверный формат Live'),400
+        try:owner=live_consumer(body.get('consumer'))
+        except ValueError as exc:return jsonify(error=str(exc)),400
+        service.live.release(cam['id'],stream,owner,container)
         return jsonify(success=True)
     @bp.get('/live/<cam_id>/<stream>/index.m3u8')
     def live_playlist(cam_id,stream):
         cam,err=authorized(cam_id)
         if err:return err
-        consumer=request.args.get('consumer');lease=live_consumer(consumer)
+        if stream not in {'main','sub','audio-main','audio-sub'}:return jsonify(error='Неизвестный профиль Live'),400
+        container=request.args.get('container','ts')
+        if container not in {'ts','fmp4'} or (stream.startswith('audio-') and container!='ts'):return jsonify(error='Неверный формат Live'),400
+        consumer=request.args.get('consumer')
+        try:lease=live_consumer(consumer)
+        except ValueError as exc:return jsonify(error=str(exc)),400
         try:
             began=time.monotonic()
-            item=service.live.ensure(cam_id,stream,lease);playlist=item['directory']/'index.m3u8'
+            if container=='fmp4' and service.live_video_capabilities(cam,stream)['codec']!='hevc':
+                return jsonify(error='HEVC этого Live-профиля не подтверждён'),409
+            if stream.startswith('audio-'):
+                if not service.live_audio_capabilities(cam,stream.removeprefix('audio-'))['supported']:
+                    return jsonify(error='Аудиодорожка этого Live-профиля не подтверждена'),409
+                # Serialize ownership changes after the potentially slow probe:
+                # concurrent requests from one wall must not retain two sounds.
+                with service.audio_start_lock:
+                    with service.live.lock:
+                        for key,item in list(service.live.streams.items()):
+                            if key!=(cam_id,stream,container) and key[1].startswith('audio-') and lease in item.get('leases',{}):service.live.release(key[0],key[1],lease,key[2])
+                    item=service.live.ensure(cam_id,stream,lease,container)
+            else:item=service.live.ensure(cam_id,stream,lease,container)
+            playlist=item['directory']/'index.m3u8'
             deadline=time.monotonic()+12
             while not playlist.exists() and time.monotonic()<deadline and item['process'].poll() is None:time.sleep(.1)
             if not playlist.exists():
                 if not item.get('reported_failure'):
-                    item['reported_failure']=True;hardware_event(rt,'live.failed',cam,level='error',stream=stream,ffmpeg_returncode=item['process'].poll(),duration_ms=round((time.monotonic()-began)*1000))
+                    item['reported_failure']=True;hardware_event(rt,'live.audio_failed' if stream.startswith('audio-') else 'live.failed',cam,level='error',stream=stream,ffmpeg_returncode=item['process'].poll(),stage='live_open',duration_ms=round((time.monotonic()-began)*1000),**live_failure_details(item))
                 return jsonify(error='Поток ещё не готов или недоступен'),503
             if not item.get('reported_ready'):
-                item['reported_ready']=True;hardware_event(rt,'live.ready',cam,stream=stream,duration_ms=round((time.monotonic()-began)*1000))
-            if consumer:
-                lines=[line+'?consumer='+consumer if re.fullmatch(r'seg_\d+\.ts',line) else line for line in playlist.read_text(encoding='utf-8').splitlines()]
+                item['reported_ready']=True;hardware_event(rt,'live.audio_ready' if stream.startswith('audio-') else 'live.ready',cam,stream=stream,duration_ms=round((time.monotonic()-began)*1000))
+            if consumer or container=='fmp4':
+                query='?'+urlencode({**({'consumer':consumer} if consumer else {}),'container':container})
+                lines=[]
+                for line in playlist.read_text(encoding='utf-8').splitlines():
+                    if line.startswith('#EXT-X-MAP:'):line=re.sub(r'URI="init\.mp4"',f'URI="init.mp4{query}"',line)
+                    elif re.fullmatch(r'seg_\d+\.(?:ts|m4s)',line):line+=query
+                    lines.append(line)
                 return Response('\n'.join(lines)+'\n',mimetype='application/vnd.apple.mpegurl',headers={'Cache-Control':'no-store'})
             return send_from_directory(item['directory'],'index.m3u8',mimetype='application/vnd.apple.mpegurl',max_age=0)
         except (ValueError,RuntimeError) as exc:return jsonify(error=str(exc)),503
+        except OSError:return jsonify(error='Поток остановлен или переключён'),503
     @bp.get('/live/<cam_id>/<stream>/<path:filename>')
     def live_segment(cam_id,stream,filename):
         cam,err=authorized(cam_id)
         if err:return err
-        if stream not in ('main','sub') or not re.fullmatch(r'seg_\d+\.ts',filename):return jsonify(error='Сегмент не найден'),404
+        container=request.args.get('container','ts')
+        if stream not in ('main','sub','audio-main','audio-sub') or container not in {'ts','fmp4'} or (stream.startswith('audio-') and container!='ts'):return jsonify(error='Сегмент не найден'),404
+        if container=='ts' and re.fullmatch(r'seg_\d+\.ts',filename):mimetype='video/mp2t'
+        elif container=='fmp4' and filename=='init.mp4':mimetype='video/mp4'
+        elif container=='fmp4' and re.fullmatch(r'seg_\d+\.m4s',filename):mimetype='video/iso.segment'
+        else:return jsonify(error='Сегмент не найден'),404
+        try:owner=live_consumer(request.args.get('consumer'))
+        except ValueError as exc:return jsonify(error=str(exc)),400
         with service.live.lock:
-            item=service.live.streams.get((cam_id,stream))
+            item=service.live.streams.get((cam_id,stream,container))
             if not item:return jsonify(error='Поток не запущен'),404
-            item.setdefault('leases',{})[live_consumer(request.args.get('consumer'))]=time.monotonic()
+            item.setdefault('leases',{})[owner]=time.monotonic()
             directory=item['directory']
-        return send_from_directory(directory,filename,mimetype='video/mp2t',max_age=0)
+        return send_from_directory(directory,filename,mimetype=mimetype,max_age=0)
     @bp.get('/api/recordings')
     def recordings():
         cam,err=authorized(request.args.get('cam_id'),True)
@@ -1022,6 +1239,8 @@ def register_media(app, rt):
         if err:return err
         if attachment and not rt.can_export_archive():return jsonify(error='Скачивание архива не разрешено администратором'),403
         try:
+            if attachment and request.args.get('format',rt.settings().get('archive_format','mp4')) not in {'mp4','avi','original'}:
+                return jsonify(error='Формат архива: mp4, avi или original; H265X не поддерживается'),400
             start,end=range_args();path=(request.args.get('path') or '').strip()
             if len(path)>2048 or '\x00' in path:raise ValueError('Некорректный путь записи')
             if request.args.get('mode','files') not in ('files','time'):raise ValueError('Неизвестный режим архива')
@@ -1030,7 +1249,7 @@ def register_media(app, rt):
             # A single playback file is never replaced by a ByTime/channel-0 request.
             if not attachment and not path:raise ValueError('Для просмотра выберите точный файл архива')
             rt.audit('archive.download' if attachment else 'archive.audio' if audio else 'archive.playback',{'device_id':cam['id'],'start':start,'end':end,'files':len(records)})
-            return create_archive_response(cam,records,start,end,attachment,audio)
+            return create_archive_response(cam,records,start,end,attachment,audio,request.args.get('format'))
         except (ValueError,TypeError,AttributeError) as exc:return jsonify(error=str(exc)),400
         except Exception:return jsonify(error='Не удалось открыть архив выбранного канала'),502
     @bp.get('/api/playback')
@@ -1051,7 +1270,7 @@ def register_media(app, rt):
     def archive_capabilities():
         cam,err=authorized(request.args.get('cam_id'),True)
         if err:return err
-        try:return jsonify(audio=service.audio_capabilities(cam,refresh=request.args.get('refresh')=='1'),streaming={'download_mode':'ByName','buffer_mb':resources()['archive_buffer_mb'],'idle_seconds':resources()['archive_idle_seconds'],'fragment_seconds':1})
+        try:return jsonify(export_formats=['mp4','avi','original'],audio=service.audio_capabilities(cam,refresh=request.args.get('refresh')=='1'),streaming={'download_mode':'ByName','buffer_mb':resources()['archive_buffer_mb'],'idle_seconds':resources()['archive_idle_seconds'],'fragment_seconds':1})
         except Exception:return jsonify(audio={'enabled':False,'supported':False,'reason':'Не удалось прочитать состояние микрофона'})
     @bp.get('/api/cameras/<cam_id>/snapshot')
     def camera_snapshot(cam_id):
@@ -1064,7 +1283,7 @@ def register_media(app, rt):
         if fmt not in codecs:return jsonify(error='Формат снимка: jpeg, png или webp'),400
         codec,mime,extension=codecs[fmt]
         try:
-            result=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-rtsp_transport','tcp','-i',build_rtsp_live_url(cam,'main'),'-frames:v','1','-an','-c:v',codec,'-f','image2pipe','pipe:1'],capture_output=True,timeout=15)
+            result=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-rtsp_transport','tcp','-i',build_rtsp_live_url(cam,'main'),'-frames:v','1','-threads',str(resources()['ffmpeg_threads']),'-an','-c:v',codec,'-f','image2pipe','pipe:1'],capture_output=True,timeout=15)
             if result.returncode or not result.stdout:return jsonify(error='Не удалось получить снимок камеры'),502
             current=rt.current_user()
             persisted=next((u for u in rt.store.get_users() if u.get('username')==(current or {}).get('username')),None)

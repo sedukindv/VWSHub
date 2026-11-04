@@ -101,7 +101,7 @@ def test_missing_legacy_key_does_not_rotate_encrypted_data(isolated_path):
     with pytest.raises(DataCorruptError,match="camkey"):DataStore(isolated_path/"data",legacy)
     assert not (isolated_path/"data"/".camkey").exists()
 
-@pytest.mark.parametrize("name,expected",[("Web VMS","VWSHub"),("My Camera Hub","My Camera Hub")])
+@pytest.mark.parametrize("name,expected",[("Web VMS","WVW"),("My Camera Hub","My Camera Hub")])
 def test_legacy_branding_migrates_without_old_default_product_name(isolated_path,name,expected):
     legacy=isolated_path/"legacy";legacy.mkdir()
     old={"site_name":name,"tagline":"Local cameras","accent":"#abcdef","animations_enabled":False}
@@ -188,7 +188,7 @@ def test_device_edit_invalidates_old_live_worker_and_archive_metadata(app,owner,
     app.extensions["vwshub_media"]=media
     response=owner.post("/api/cameras",json={"id":"cam_a","name":"Edited","ip":"192.0.2.3"})
     assert response.status_code==200
-    assert media.live.stop.call_args_list==[call("cam_a","main"),call("cam_a","sub")]
+    assert media.live.stop.call_args_list==[call("cam_a","main"),call("cam_a","sub"),call("cam_a","audio-main"),call("cam_a","audio-sub")]
     assert media.files=={("cam_b","keep"):"cached"} and media.audio_cache=={"cam_b":"keep"}
     cancel.assert_called_once();keep.assert_not_called()
 
@@ -216,7 +216,7 @@ def test_settings_validate_resources_and_formats(owner):
     response=owner.post("/api/settings",json={"resources":{"profile":"maximum"},"timezone":"UTC","snapshot_format":"png"})
     assert response.status_code==200
     settings=response.get_json()["settings"]
-    assert settings["resources"]["max_live_streams"]==64 and settings["timezone"]=="UTC" and settings["version"]=="0.8.5"
+    assert settings["resources"]["max_live_streams"]==128 and settings["timezone"]=="UTC" and settings["version"]=="0.9.0"
 
 def test_branding_applies_publicly_but_svg_is_rejected(app,owner):
     assert owner.post("/api/branding",json={"name":"My Hub","accent":"#123abc","motion":False}).status_code==200
@@ -289,14 +289,20 @@ def test_uploaded_logo_and_favicon_survive_restart_and_backup(app,owner,isolated
         return "data:image/png;base64,"+base64.b64encode(raw).decode()
     assets={"logo":image((147,96,207)),"favicon":image((19,160,138)),"logo_icon":"","favicon_icon":""}
     assert owner.post("/api/branding",json=assets).status_code==200
+    stored=owner.get("/api/branding").json
+    assert all(stored[key].startswith("/images/") for key in ("logo","favicon"))
+    for key in ("logo","favicon"):
+        assert owner.get(stored[key]).data==base64.b64decode(assets[key].split(",",1)[1])
     restarted=create_app(isolated_path/"data",{"TESTING":True,"REGISTER_EXTENSIONS":False,"CSRF_ENABLED":False,"LEGACY_DATA_DIR":isolated_path/"legacy"})
-    assert all(restarted.test_client().get("/api/branding").json[key]==value for key,value in assets.items())
+    assert restarted.test_client().get("/api/branding").json==stored
     login=restarted.test_client().get("/login").get_data(as_text=True)
-    assert assets["logo"] in login and assets["favicon"] in login
+    assert stored["logo"] in login and stored["favicon"] in login
     from hub.backup import validate_backup
     files,_=validate_backup(owner.get("/api/backup").data)
     brand=json.loads(files["settings.json"])["branding"]
-    assert all(brand[key]==value for key,value in assets.items())
+    assert all(brand[key]==stored[key] for key in assets)
+    for key in ("logo","favicon"):
+        assert files["images/"+brand[key].split("/")[-1]]==base64.b64decode(assets[key].split(",",1)[1])
 
 
 def test_legacy_space_creation_flag_is_accepted_and_normalized(owner):
@@ -304,3 +310,178 @@ def test_legacy_space_creation_flag_is_accepted_and_normalized(owner):
     assert result.status_code==201
     assert result.json["user"]["permissions"]["edit_spaces"] is True
     assert "create_spaces" not in result.json["user"]["permissions"]
+
+
+def test_resource_manual_change_preserves_other_limits_and_becomes_custom(owner):
+    assert owner.post("/api/settings",json={"resources":{"profile":"minimal"}}).status_code==200
+    reply=owner.post("/api/settings",json={"resources":{"max_live_streams":7}})
+    values=reply.get_json()["settings"]["resources"]
+    assert values=={"profile":"custom","max_live_streams":7,"max_archive_streams":1,"archive_buffer_mb":8,"archive_idle_seconds":90,"ffmpeg_threads":1}
+    result=owner.get("/api/settings").get_json()
+    assert "Asia/Omsk" in result["timezones"] and len(result["timezones"])>300
+    assert set(result["resource_profiles"])=={"minimal","standard","maximum"}
+
+
+def test_hardware_journal_distinguishes_started_cancelled_and_failed(app):
+    hardware=app.extensions["vwshub"].hardware
+    for event,detail,expected in [("archive.open",{},"started"),("archive.closed",{"cancelled":True},"cancelled"),("status.unreachable",{},"failed")]:
+        hardware.record(event,duration_ms=10,**detail)
+        row=hardware.entries(1)[0]
+        assert row["detail"]["result"]==expected
+        assert row["detail"]["started_at"]<=row["time"]
+
+
+def test_raster_migration_snapshot_idempotence_and_no_json_base64(app,isolated_path):
+    import base64,struct,zlib
+    def chunk(kind,data):
+        return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+    raw=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",1,1,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(b"\x00\x10\x20\x30"))+chunk(b"IEND",b"")
+    legacy="data:image/png;base64,"+base64.b64encode(raw).decode()
+    store=app.extensions["vwshub"].store
+    settings=store.get_settings();settings["branding"]["logo"]=legacy
+    store._write(store.settings_file,settings)
+    original=store.settings_file.read_bytes()
+    restarted=create_app(isolated_path/"data",{"TESTING":True,"REGISTER_EXTENSIONS":False,"CSRF_ENABLED":False,"LEGACY_DATA_DIR":isolated_path/"legacy"})
+    migrated=restarted.extensions["vwshub"].store
+    url=migrated.get_settings()["branding"]["logo"]
+    assert url.startswith("/images/") and restarted.test_client().get(url).data==raw
+    assert b"data:image/" not in migrated.settings_file.read_bytes()
+    copies=list((migrated.base_dir/"migration-backups").glob("before-images-*.zip"))
+    assert len(copies)==1
+    import zipfile
+    with zipfile.ZipFile(copies[0]) as z:assert z.read("data/settings.json")==original
+    migrated.images.migrate()
+    assert len(list((migrated.base_dir/"migration-backups").glob("before-images-*.zip")))==1
+
+
+def test_image_urls_cannot_reference_missing_assets_or_other_paths(app,owner):
+    assert owner.post("/api/branding",json={"logo":"/images/"+"a"*64+".png"}).status_code==400
+    assert owner.post("/api/branding",json={"logo":"/images/../.camkey"}).status_code==400
+    assert app.test_client().get("/images/"+"a"*64+".png").status_code==401
+
+
+def test_backup_images_restore_to_different_installation_and_reject_missing_file(app,owner,isolated_path):
+    import base64,struct,zlib,io,zipfile
+    from hub.backup import validate_backup
+    from hub.store import DataStore
+    def chunk(kind,data):return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+    raw=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",1,1,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(b"\x00\x40\x50\x60"))+chunk(b"IEND",b"")
+    assert owner.post("/api/branding",json={"logo":"data:image/png;base64,"+base64.b64encode(raw).decode()}).status_code==200
+    backup=owner.get("/api/backup").data
+    files,_=validate_backup(backup)
+    target=DataStore(isolated_path/"other-installation")
+    target.restore(files)
+    url=target.get_settings()["branding"]["logo"]
+    assert target.images.path(url.split("/")[-1]).read_bytes()==raw
+    output=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(backup)) as old,zipfile.ZipFile(output,"w") as new:
+        for item in old.infolist():
+            if not item.filename.startswith("data/images/"):new.writestr(item.filename,old.read(item))
+    with pytest.raises(ValueError,match="изображение"):validate_backup(output.getvalue())
+
+
+def test_image_collection_keeps_referenced_and_recent_files(app,owner):
+    import os,time,hashlib
+    store=app.extensions["vwshub"].store
+    image=bytes([137,80,78,71,13,10,26,10])+b"synthetic-unused-signature-fixture"
+    name=hashlib.sha256(image).hexdigest()+".png"
+    path=store.images.path(name);path.write_bytes(image)
+    store.images.collect();assert path.exists()
+    os.utime(path,(time.time()-90000,time.time()-90000))
+    store.images.collect();assert not path.exists()
+
+
+def test_locales_theme_colors_and_personal_timezone_are_validated_and_backed_up(app,owner):
+    from hub.backup import validate_backup
+    colors={"light":{"text":"#102030","surface":"#ffffff","button_text":"#ffffff"},"dark":{"text":"#f0f0f0","surface":"#102030"}}
+    assert owner.post("/api/branding",json={"theme_colors":colors}).status_code==200
+    assert owner.post("/api/branding",json={"theme_colors":{"dark":{"text":"url(javascript:bad)"}}}).status_code==400
+    assert owner.post("/api/branding",json={"theme_colors":{"light":{"button_text":"auto"}}}).status_code==400
+    assert owner.post("/api/settings",json={"language":"ar"}).status_code==200
+    assert owner.post("/api/profile",json={"language":"zh-TW","timezone":"Europe/Prague"}).status_code==200
+    assert owner.get("/api/profile").json["timezone"]=="Europe/Prague"
+    assert owner.post("/api/profile",json={"timezone":"../bad"}).status_code==400
+    assert owner.post("/api/profile",json={"language":"unavailable"}).status_code==400
+    metadata=owner.get("/api/settings").json["settings"]["supported_locales"]
+    assert len(metadata)==28 and next(x for x in metadata if x["code"]=="ar")["direction"]=="rtl"
+    files,_=validate_backup(owner.get("/api/backup").data)
+    assert json.loads(files["settings.json"])["branding"]["theme_colors"]==colors
+    assert json.loads(files["users.json"])[0]["timezone"]=="Europe/Prague"
+
+
+def test_hevc_setting_is_admin_only_strict_persistent_and_portable(app,owner,catalog):
+    from hub.backup import validate_backup
+    assert owner.get("/api/bootstrap").json["public_settings"]["hevc_support"] is False
+    before=catalog.store.get_devices()
+    denied=viewer(app,owner,["group_a"])
+    assert denied.post("/api/settings",json={"hevc_support":True}).status_code==403
+    assert owner.post("/api/settings",json={"hevc_support":"true"}).status_code==400
+    assert owner.post("/api/settings",json={"hevc_support":True}).status_code==200
+    assert catalog.store.get_devices()==before
+    restarted=create_app(catalog.store.base_dir,{"TESTING":True,"REGISTER_EXTENSIONS":False,"LEGACY_DATA_DIR":catalog.store.base_dir})
+    assert restarted.extensions["vwshub"].settings()["hevc_support"] is True
+    files,_=validate_backup(owner.get("/api/backup").data)
+    assert json.loads(files["settings.json"])["hevc_support"] is True
+    assert owner.post("/api/settings",json={"timezone":"UTC"}).status_code==200
+    assert catalog.settings()["hevc_support"] is True
+    assert owner.post("/api/settings",json={"hevc_support":False}).status_code==200
+    assert owner.get("/api/bootstrap").json["public_settings"]["hevc_support"] is False
+
+
+def test_old_settings_without_hevc_remain_disabled(app,owner):
+    store=app.extensions["vwshub"].store
+    settings=store.get_settings();settings.pop("hevc_support",None);store.save_settings(settings)
+    assert owner.get("/api/settings").json["settings"]["hevc_support"] is False
+    settings["hevc_support"]="false";store.settings_file.write_text(json.dumps(settings),encoding="utf-8")
+    assert owner.get("/api/settings").status_code==503
+
+
+def test_image_migration_write_failure_rolls_back_json(app,monkeypatch):
+    import base64
+    store=app.extensions["vwshub"].store
+    settings=store.get_settings();settings["branding"]["logo"]="data:image/png;base64,"+base64.b64encode(b"\x89PNG\r\n\x1a\nsynthetic-migration-signature").decode()
+    store._write(store.settings_file,settings)
+    before={path:path.read_bytes() for path in (store.settings_file,store.users_file)}
+    original=store._write_bytes;failed=False
+    def failure(path,data):
+        nonlocal failed
+        if Path(path)==store.users_file and not failed:
+            failed=True;raise OSError("synthetic full disk")
+        return original(path,data)
+    monkeypatch.setattr(store,"_write_bytes",failure)
+    with pytest.raises(OSError):store.images.migrate()
+    assert all(path.read_bytes()==data for path,data in before.items())
+    assert not (store.base_dir/".restore-journal.json").exists()
+
+
+def test_backup_refuses_unrestorable_size_instead_of_returning_a_bad_zip(owner,monkeypatch):
+    import hub.backup
+    monkeypatch.setattr(hub.backup,"MAX_BYTES",16)
+    response=owner.get("/api/backup")
+    assert response.status_code==413 and response.is_json
+
+
+def test_legacy_512kb_brand_asset_survives_migration(app,isolated_path):
+    import base64,random,struct,zlib
+    def chunk(kind,data):return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data)&0xffffffff)
+    pixels=random.Random(917).randbytes(512*256*3)
+    rows=b"".join(b"\0"+pixels[y*1536:(y+1)*1536] for y in range(256))
+    raw=b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",512,256,8,2,0,0,0))+chunk(b"IDAT",zlib.compress(rows))+chunk(b"IEND",b"")
+    assert 262144<len(raw)<524288
+    store=app.extensions["vwshub"].store;settings=store.get_settings()
+    settings["branding"]["logo"]="data:image/png;base64,"+base64.b64encode(raw).decode()
+    store._write(store.settings_file,settings)
+    restarted=create_app(isolated_path/"data",{"TESTING":True,"REGISTER_EXTENSIONS":False,"CSRF_ENABLED":False,"LEGACY_DATA_DIR":isolated_path/"legacy"})
+    url=restarted.extensions["vwshub"].settings()["branding"]["logo"]
+    assert restarted.test_client().get(url).data==raw
+
+
+def test_connection_invalidation_stops_audio_and_clears_live_audio_fingerprint_cache(app):
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    worker=SimpleNamespace(lock=threading.RLock(),live=SimpleNamespace(stop=Mock()),files={},audio_cache={},live_audio_cache={"old-fingerprint":{"supported":True}},operations={})
+    app.extensions["vwshub_media"]=worker
+    app.extensions["vwshub_invalidate_camera"]("old-camera")
+    assert {args.args for args in worker.live.stop.call_args_list}=={("old-camera",stream) for stream in ("main","sub","audio-main","audio-sub")}
+    assert worker.live_audio_cache=={}

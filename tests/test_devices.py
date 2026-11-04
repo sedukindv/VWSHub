@@ -257,3 +257,392 @@ def test_only_one_route_for_profiles_no_camera_test_shadow(console):
     urls=[rule.rule for rule in console.app.url_map.iter_rules()]
     assert urls.count("/api/onvif/profiles")==1
     assert "/api/cameras/test" not in urls
+
+
+def test_reboot_requires_ack_keeps_control_link_and_blocks_duplicates(console):
+    response=post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder")
+    assert response.status_code==200 and response.json["accepted"] is True
+    assert response.json["verification_required"] is True
+    console.dvr.set_command.assert_called_once_with("OPMachine",{"Action":"Reboot"})
+    console.dvr._wait_for_disconnect.assert_called_once_with(15)
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder").status_code==409
+    assert console.dvr.set_command.call_count==1
+
+
+def test_reboot_refusal_does_not_report_success(console):
+    console.dvr.set_command.return_value={"Ret":104}
+    response=post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder")
+    assert response.status_code==502
+    console.dvr._wait_for_disconnect.assert_not_called()
+
+
+def test_reboot_without_confirmation_never_sends_command(console):
+    assert post(console,"/api/device/system",action="reboot").status_code==400
+    console.dvr.set_command.assert_not_called()
+
+
+def test_summary_network_is_decoded_without_mutating_wire_config(console):
+    console.dvr.get_netcommon.return_value={"HostIP":"0x320611AC","GateWay":"0x0A0611AC"}
+    response=post(console,"/api/device/system",action="read")
+    assert response.json["network_display"]=={"HostIP":"172.17.6.50","GateWay":"172.17.6.10"}
+    assert response.json["network"]["HostIP"]=="0x320611AC"
+
+
+def test_unknown_and_unconfirmed_geometry_have_no_guessed_editor():
+    fields=devices.describe_config({"AutoLogout":0,"FrontColor":"0xFFFFFFFF","RelativePos":[0,1,2,3],"Enable":True},"osd")
+    assert all(not f["display"] for f in fields if f["key"]!="Enable")
+    assert all(not f["editable"] for f in fields if f["key"]!="Enable")
+
+
+def test_ntp_ip_uses_network_byte_order_and_preserves_unknown():
+    current={"Enable":True,"Server":{"Address":"0x0A0611AC","Name":"ntp.example.test","Private":4}}
+    fields=devices.describe_config(current,"ntp")
+    assert next(f for f in fields if f["key"]=="Address")["value"]=="172.17.6.10"
+    updated=devices.patch_config(current,"ntp",[{"path":["Server","Address"],"value":"172.17.6.50"}])
+    assert updated["Server"]["Address"]=="0x320611AC" and updated["Server"]["Private"]==4
+
+
+@pytest.mark.parametrize("reply",[{},True,{"Ret":515},{"Ret":150}])
+def test_reboot_requires_exact_reboot_ack(console,reply):
+    console.dvr.set_command.return_value=reply
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder").status_code==502
+    console.dvr._wait_for_disconnect.assert_not_called()
+
+
+def test_reboot_name_must_match_before_device_connection(console):
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Different").status_code==400
+    console.connector.assert_not_called()
+
+
+def test_reboot_resets_management_evidence_and_read_restores_it(console):
+    from hub.store import DataStore
+    key=DataStore.connection_key(console.runtime.camera)
+    assert post(console,"/api/device/system",action="read").status_code==200
+    assert console.runtime.device_health[key]["management_checked"]>0
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder").status_code==200
+    assert console.runtime.device_health[key]["management_checked"]==0
+
+
+def test_onvif_reboot_confirmation_and_cooldown(console):
+    console.runtime.camera["protocol"]="onvif"
+    device=Mock();device.SystemReboot.return_value="Rebooting"
+    console.soap.services={"devicemgmt":device}
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder").status_code==200
+    assert post(console,"/api/device/system",action="reboot",confirm=True,device_name="Recorder").status_code==409
+    device.SystemReboot.assert_called_once()
+
+
+def test_vendor_timezone_code_has_no_guessed_iana_editor():
+    descriptor=devices.describe_config({"TimeZone":14},"location")[0]
+    assert descriptor["editable"] is False and descriptor["display"] is False
+    with pytest.raises(ValueError):devices.patch_config({"TimeZone":14},"location",[{"path":["TimeZone"],"value":15}])
+
+
+def test_hardware_timeout_is_structured_without_exception_secrets(console):
+    console.dvr.get_system_info.side_effect=TimeoutError("rtsp://admin:secret@192.0.2.10/live")
+    response=post(console,"/api/device/system",action="read")
+    assert response.status_code==504
+    assert response.json["error_code"]=="timeout" and response.json["stage"]=="system"
+    assert "secret" not in response.get_data(as_text=True)
+
+
+def test_onvif_network_writes_only_changes_preserves_extra_addresses_and_reads_back(console):
+    console.runtime.camera["protocol"]="onvif"
+    cfg={"DHCP":False,"Manual":[{"Address":"192.0.2.10","PrefixLength":24},{"Address":"192.0.2.11","PrefixLength":24}]}
+    device=Mock();device.GetNetworkInterfaces.side_effect=lambda:[{"token":"eth0","IPv4":{"Config":copy.deepcopy(cfg)},"IPv6":{"Enabled":True}}]
+    def save(value):cfg.update(copy.deepcopy(value["NetworkInterface"]["IPv4"]));return {"RebootNeeded":False}
+    device.SetNetworkInterfaces.side_effect=save;console.soap.services={"devicemgmt":device}
+    reply=post(console,"/api/device/onvif/network",settings={"token":"eth0","dhcp":False,"address":"192.0.2.12","prefix":24},confirm=True,device_name="Recorder")
+    assert reply.status_code==200 and reply.json["saved"] is True
+    assert cfg["Manual"]==[{"Address":"192.0.2.12","PrefixLength":24},{"Address":"192.0.2.11","PrefixLength":24}]
+    device.SetDNS.assert_not_called();device.SetNetworkDefaultGateway.assert_not_called()
+    payload=device.SetNetworkInterfaces.call_args.args[0]
+    assert set(payload["NetworkInterface"])=={"IPv4"}
+
+
+def test_onvif_network_unchanged_configuration_has_no_writes(console):
+    console.runtime.camera["protocol"]="onvif"
+    device=Mock();device.GetNetworkInterfaces.return_value=[{"token":"eth0","IPv4":{"Config":{"DHCP":True}}}]
+    console.soap.services={"devicemgmt":device}
+    response=post(console,"/api/device/onvif/network",settings={"token":"eth0","dhcp":True},confirm=True,device_name="Recorder")
+    assert response.status_code==200 and response.json["saved"] is True
+    device.SetNetworkInterfaces.assert_not_called();device.SetDNS.assert_not_called()
+
+
+def test_onvif_network_ack_without_changed_readback_is_not_reported_saved(console):
+    console.runtime.camera["protocol"]="onvif"
+    device=Mock();device.GetNetworkInterfaces.return_value=[{"token":"eth0","IPv4":{"Config":{"DHCP":True}}}]
+    device.SetNetworkInterfaces.return_value={"RebootNeeded":False};console.soap.services={"devicemgmt":device}
+    response=post(console,"/api/device/onvif/network",settings={"token":"eth0","dhcp":False,"address":"192.0.2.12","prefix":24},confirm=True,device_name="Recorder")
+    assert response.status_code==200 and response.json["saved"] is False and response.json["accepted"] is True
+    assert response.json["verification_pending"] is True
+
+
+def test_management_health_updates_preserve_media_evidence_and_clear_on_timeout(console):
+    from hub.store import DataStore
+    key=DataStore.connection_key(console.runtime.camera)
+    console.runtime.device_health={key:{"archive_sources":{"cam1":10}}}
+    assert post(console,"/api/device/system",action="read").status_code==200
+    assert console.runtime.device_health[key]["archive_sources"]=={"cam1":10}
+    console.dvr.get_system_info.side_effect=TimeoutError("synthetic transport timeout")
+    assert post(console,"/api/device/system",action="read").status_code==504
+    assert console.runtime.device_health[key]["management_checked"]==0
+
+
+@pytest.mark.parametrize("name",["ntp://pool.example.test","pool.example.test:123","host/path","bad host"])
+def test_ntp_server_name_rejects_urls_ports_and_spaces(name):
+    with pytest.raises(ValueError):devices.patch_config({"Server":{"Name":"pool.example.test"}},"ntp",[{"path":["Server","Name"],"value":name}])
+
+
+def test_dvrip_time_requires_local_clock_and_verifies_readback(console):
+    from datetime import datetime
+    assert post(console,"/api/device/system",action="time",utc="2026-11-03T12:00:00Z").status_code==400
+    console.dvr.set_time.return_value={"Ret":100}
+    console.dvr.get_time.return_value=datetime(2026,11,3,12,0,0)
+    response=post(console,"/api/device/system",action="time",local_time="2026-11-03T12:00:00")
+    assert response.status_code==200 and response.json["saved"] is True
+    console.dvr.get_time.return_value=datetime(2026,11,3,11,0,0)
+    response=post(console,"/api/device/system",action="time",local_time="2026-11-03T12:00:00")
+    assert response.json["saved"] is False and response.json["accepted"] is True
+
+
+def test_onvif_time_reports_unconfirmed_readback_honestly(console):
+    console.runtime.camera["protocol"]="onvif"
+    device=Mock();device.GetSystemDateAndTime.return_value={"UTCDateTime":{"Date":{"Year":2026,"Month":11,"Day":3},"Time":{"Hour":12,"Minute":0,"Second":0}},"DaylightSavings":False}
+    console.soap.services={"devicemgmt":device}
+    assert post(console,"/api/device/system",action="time",utc="2026-11-03T12:00:00Z").json["saved"] is True
+    assert post(console,"/api/device/system",action="time",utc="2026-11-03T13:00:00Z").json["saved"] is False
+
+
+@pytest.fixture
+def ntp_console(console):
+    console.runtime.camera["protocol"]="onvif"
+    device=Mock()
+    console.ntp={"FromDHCP":False,"NTPManual":[{"Type":"DNS","DNSname":"pool.example.test","Extension":{"Private":17}}],"Extension":{"Keep":9}}
+    console.clock={"DateTimeType":"Manual","DaylightSavings":True,"TimeZone":{"TZ":"CET-1CEST"},"UTCDateTime":{"Date":{"Year":2026,"Month":11,"Day":3},"Time":{"Hour":12,"Minute":0,"Second":0}}}
+    device.GetNTP.side_effect=lambda:copy.deepcopy(console.ntp)
+    device.GetServiceCapabilities.return_value={"Network":{"NTP":3}}
+    device.GetSystemDateAndTime.side_effect=lambda:copy.deepcopy(console.clock)
+    device.SetNTP.side_effect=lambda value:console.ntp.update(copy.deepcopy(value))
+    device.SetSystemDateAndTime.side_effect=lambda value:console.clock.update(copy.deepcopy(value))
+    console.soap.services={"devicemgmt":device};console.device=device
+    return console
+
+
+def ntp_save(c,settings,**extra):
+    revision=post(c,"/api/device/onvif/ntp").json["revision"]
+    return post(c,"/api/device/onvif/ntp",settings=settings,revision=revision,confirm=True,**extra)
+
+
+def test_onvif_ntp_capability_read_and_noop(ntp_console):
+    c=ntp_console
+    data=post(c,"/api/device/onvif/ntp").json
+    assert data["writable"] and data["mode_writable"] and data["max_servers"]==3
+    assert data["servers"]==["pool.example.test"] and data["enabled"] is False
+    assert ntp_save(c,{}).json["saved"] is True
+    c.device.SetNTP.assert_not_called();c.device.SetSystemDateAndTime.assert_not_called()
+
+
+@pytest.mark.parametrize("maximum",[None,0,True,"3",-1,257])
+def test_onvif_ntp_without_positive_capability_is_readonly(ntp_console,maximum):
+    c=ntp_console;c.device.GetServiceCapabilities.return_value={"Network":{"NTP":maximum}}
+    assert post(c,"/api/device/onvif/ntp").json["writable"] is False
+    assert ntp_save(c,{"from_dhcp":True}).status_code==501
+    c.device.SetNTP.assert_not_called()
+
+
+def test_onvif_ntp_unsupported_safe_failure(ntp_console):
+    c=ntp_console;c.device.GetNTP.side_effect=RuntimeError("ter:ActionNotSupported")
+    assert post(c,"/api/device/onvif/ntp").status_code==501
+    c.device.SetNTP.assert_not_called()
+
+
+def test_onvif_ntp_revision_confirm_and_unknown_rejected(ntp_console):
+    c=ntp_console
+    assert post(c,"/api/device/onvif/ntp",settings={},revision="stale",confirm=True).status_code==409
+    assert post(c,"/api/device/onvif/ntp",settings={}).status_code==400
+    assert ntp_save(c,{"port":123}).status_code==400
+    c.device.SetNTP.assert_not_called()
+
+
+@pytest.mark.parametrize("settings",[
+    {"servers":["https://pool.example.test"]},{"servers":["pool.example.test:123"]},
+    {"servers":["pool.example.test/path"]},{"servers":[" pool.example.test"]},
+    {"servers":["a b"]},{"servers":["a","A."]},{"servers":["a","b","c","d"]},
+    {"servers":[123]},{"servers":["fe80::1%eth0"]},{"servers":"pool.example.test"},{"from_dhcp":1},{"enabled":1},
+    {"servers":[],"enabled":True},
+])
+def test_onvif_ntp_validates_everything_before_write(ntp_console,settings):
+    c=ntp_console
+    assert ntp_save(c,settings).status_code==400
+    c.device.SetNTP.assert_not_called();c.device.SetSystemDateAndTime.assert_not_called()
+
+
+def test_onvif_ntp_changed_only_merge_preserves_extensions(ntp_console):
+    c=ntp_console;before=copy.deepcopy(c.ntp)
+    result=ntp_save(c,{"servers":["POOL.EXAMPLE.TEST.","192.0.2.123","2001:db8::123"]})
+    assert result.status_code==200 and result.json["saved"] is True
+    value=c.device.SetNTP.call_args.args[0]
+    assert value["NTPManual"][0]==before["NTPManual"][0]
+    assert value["NTPManual"][1]=={"Type":"IPv4","IPv4Address":"192.0.2.123"}
+    assert value["NTPManual"][2]=={"Type":"IPv6","IPv6Address":"2001:db8::123"}
+    assert c.ntp["Extension"]==before["Extension"]
+    c.device.SetSystemDateAndTime.assert_not_called()
+
+
+def test_onvif_ntp_dhcp_partial_preserves_manual_hosts(ntp_console):
+    c=ntp_console;before=copy.deepcopy(c.ntp["NTPManual"])
+    assert ntp_save(c,{"from_dhcp":True}).json["saved"] is True
+    assert c.ntp["NTPManual"]==before
+
+
+def test_onvif_ntp_mode_only_preserves_timezone_and_clock(ntp_console):
+    c=ntp_console;before=copy.deepcopy(c.clock)
+    assert ntp_save(c,{"enabled":True}).json["saved"] is True
+    c.device.SetNTP.assert_not_called()
+    assert c.device.SetSystemDateAndTime.call_args.args[0]=={"DateTimeType":"NTP","DaylightSavings":True,"TimeZone":before["TimeZone"]}
+    assert ntp_save(c,{"enabled":False}).json["saved"] is True
+    assert c.device.SetSystemDateAndTime.call_args.args[0]["UTCDateTime"]==before["UTCDateTime"]
+
+
+def test_onvif_ntp_disable_requires_actual_utc_before_any_write(ntp_console):
+    c=ntp_console;c.clock["DateTimeType"]="NTP";del c.clock["UTCDateTime"]
+    assert ntp_save(c,{"enabled":False,"from_dhcp":True}).status_code==501
+    c.device.SetNTP.assert_not_called();c.device.SetSystemDateAndTime.assert_not_called()
+
+
+def test_onvif_ntp_ack_without_readback_is_not_saved(ntp_console):
+    c=ntp_console;c.device.SetNTP.side_effect=None
+    result=ntp_save(c,{"from_dhcp":True})
+    assert result.status_code==200 and result.json["accepted"] is True
+    assert result.json["saved"] is False and result.json["verification_pending"] is True
+
+
+def test_onvif_ntp_unknown_host_cannot_be_overwritten(ntp_console):
+    c=ntp_console;c.ntp["NTPManual"].append({"Type":"vendor","Address":"opaque"})
+    assert post(c,"/api/device/onvif/ntp").json["writable"] is False
+    assert ntp_save(c,{"servers":["new.example.test"]}).status_code==501
+    c.device.SetNTP.assert_not_called()
+
+
+def test_onvif_ntp_mode_requires_complete_current_clock(ntp_console):
+    c=ntp_console;del c.clock["DaylightSavings"]
+    assert post(c,"/api/device/onvif/ntp").json["mode_writable"] is False
+    assert ntp_save(c,{"enabled":True}).status_code==501
+    c.device.SetSystemDateAndTime.assert_not_called()
+
+
+def test_onvif_ntp_mode_ack_does_not_claim_success(ntp_console):
+    c=ntp_console;c.device.SetSystemDateAndTime.side_effect=None
+    result=ntp_save(c,{"enabled":True})
+    assert result.json["accepted"] is True and result.json["saved"] is False
+
+
+def test_onvif_ntp_write_optional_operation_fault_is_unsupported(ntp_console):
+    c=ntp_console;c.device.SetNTP.side_effect=RuntimeError("ter:OptionalActionNotImplemented")
+    assert ntp_save(c,{"from_dhcp":True}).status_code==501
+
+
+def test_onvif_ntp_cannot_be_accessed_by_operator(ntp_console):
+    c=ntp_console;c.runtime.me={"role":"operator"}
+    assert post(c,"/api/device/onvif/ntp").status_code==403
+    c.soap_connector.assert_not_called()
+
+
+def test_onvif_ntp_capability_matches_confirmed_device_support(ntp_console):
+    c=ntp_console
+    c.device.GetCapabilities.return_value={}
+    c.soap.services["media"]=NS(GetProfiles=lambda:[])
+    caps=post(c,"/api/device/capabilities").json["capabilities"]
+    assert caps["ntp_read"] is True and caps["ntp"] is True
+    c.device.GetNTP.side_effect=RuntimeError("ActionNotSupported")
+    caps=post(c,"/api/device/capabilities").json["capabilities"]
+    assert caps["ntp_read"] is False and caps["ntp"] is False
+
+
+@pytest.fixture
+def onvif_settings_console(console):
+    c=console;c.runtime.camera["protocol"]="onvif"
+    c.hostname="old-host";c.imaging_state={"Brightness":50,"Contrast":40}
+    c.encoder_state=NS(token="encoder",Encoding="H264",Resolution=NS(Width=1280,Height=720),
+        RateControl=NS(FrameRateLimit=10,BitrateLimit=1000),Quality=4,Extension=NS(VendorFlag=77))
+    c.device=Mock();c.media=Mock();c.imaging=Mock()
+    c.media.GetProfiles.return_value=[NS(token="profile",VideoSourceConfiguration=NS(SourceToken="sensor"),VideoEncoderConfiguration=NS(token="encoder"))]
+    c.media.GetVideoEncoderConfiguration.side_effect=lambda *args:copy.deepcopy(c.encoder_state)
+    c.media.GetVideoEncoderConfigurationOptions.return_value=NS(H264=NS(FrameRateRange=NS(Min=1,Max=30),
+        BitrateRange=NS(Min=100,Max=10000),ResolutionsAvailable=[NS(Width=1280,Height=720),NS(Width=1920,Height=1080)]),
+        Extension=None,QualityRange=NS(Min=1,Max=6))
+    def encoder_save(data):c.encoder_state=copy.deepcopy(data["Configuration"])
+    c.media.SetVideoEncoderConfiguration.side_effect=encoder_save
+    c.imaging.GetOptions.return_value={key:{"Min":0,"Max":100} for key in c.imaging_state}
+    c.imaging.GetImagingSettings.side_effect=lambda *args:copy.deepcopy(c.imaging_state)
+    c.imaging.SetImagingSettings.side_effect=lambda data:c.imaging_state.update(data["ImagingSettings"])
+    c.device.GetHostname.side_effect=lambda:{"Name":c.hostname,"FromDHCP":False}
+    def hostname_save(data):c.hostname=data["Name"].lower()
+    c.device.SetHostname.side_effect=hostname_save
+    c.soap.services={"devicemgmt":c.device,"media":c.media,"imaging":c.imaging}
+    return c
+
+
+ONVIF_WRITES=[("imaging",{"settings":{"Brightness":75}}),
+              ("encoder",{"settings":{"fps":25,"bitrate":2000,"quality":4.5,"width":1920,"height":1080}}),
+              ("hostname",{"hostname":"New-Host"})]
+
+
+@pytest.mark.parametrize("kind,payload",ONVIF_WRITES)
+def test_onvif_write_reports_saved_only_after_matching_readback(onvif_settings_console,kind,payload):
+    c=onvif_settings_console
+    reply=post(c,"/api/device/"+kind,**payload)
+    assert reply.status_code==200
+    assert reply.json["accepted"] is True and reply.json["saved"] is True
+    assert reply.json["readback_available"] is True and reply.json["verification_pending"] is False
+    if kind=="hostname":
+        c.device.GetHostname.assert_called_once();assert reply.json["hostname"]=="new-host"
+    elif kind=="encoder":
+        sent=c.media.SetVideoEncoderConfiguration.call_args.args[0]
+        assert sent["Configuration"].Extension.VendorFlag==77
+
+
+@pytest.mark.parametrize("kind,payload",ONVIF_WRITES)
+def test_onvif_setter_ack_without_persistence_cannot_report_saved(onvif_settings_console,kind,payload):
+    c=onvif_settings_console
+    setter={"imaging":c.imaging.SetImagingSettings,"encoder":c.media.SetVideoEncoderConfiguration,"hostname":c.device.SetHostname}[kind]
+    setter.side_effect=None
+    reply=post(c,"/api/device/"+kind,**payload)
+    assert reply.status_code==200 and reply.json["accepted"] is True
+    assert reply.json["saved"] is False and reply.json["verification_pending"] is True
+    assert reply.json["readback_available"] is True
+    setter.assert_called_once()
+
+
+@pytest.mark.parametrize("kind,payload",ONVIF_WRITES)
+def test_onvif_readback_failure_preserves_accepted_but_unverified_result(onvif_settings_console,kind,payload):
+    c=onvif_settings_console
+    error=TimeoutError("rtsp://admin:private-password@192.0.2.10/live")
+    if kind=="encoder":c.media.GetVideoEncoderConfiguration.side_effect=[copy.deepcopy(c.encoder_state),error]
+    elif kind=="imaging":c.imaging.GetImagingSettings.side_effect=error
+    else:c.device.GetHostname.side_effect=error
+    reply=post(c,"/api/device/"+kind,**payload)
+    assert reply.status_code==200 and reply.json["accepted"] is True
+    assert reply.json["saved"] is False and reply.json["verification_pending"] is True
+    assert reply.json["readback_available"] is False
+    assert "private-password" not in reply.get_data(as_text=True)
+
+
+def test_onvif_readback_verifies_only_requested_fields(onvif_settings_console):
+    c=onvif_settings_console
+    def save(data):
+        c.encoder_state=copy.deepcopy(data["Configuration"])
+        c.encoder_state.Quality=6 # An unrelated firmware adjustment is not our patch.
+    c.media.SetVideoEncoderConfiguration.side_effect=save
+    reply=post(c,"/api/device/encoder",settings={"fps":25})
+    assert reply.json["saved"] is True and reply.json["settings"]["quality"]==6
+
+
+@pytest.mark.parametrize("kind",["imaging","encoder"])
+def test_onvif_plain_read_failure_is_not_hidden_as_an_accepted_write(onvif_settings_console,kind):
+    c=onvif_settings_console
+    if kind=="imaging":c.imaging.GetImagingSettings.side_effect=TimeoutError("synthetic read timeout")
+    else:c.media.GetVideoEncoderConfiguration.side_effect=TimeoutError("synthetic read timeout")
+    reply=post(c,"/api/device/"+kind)
+    assert reply.status_code==504 and "accepted" not in reply.json

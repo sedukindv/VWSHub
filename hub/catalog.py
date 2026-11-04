@@ -107,22 +107,48 @@ def check_status(runtime, app, devices):
     for camera in devices: physical.setdefault(DataStore.connection_key(camera), []).append(camera)
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     media = app.extensions.get("vwshub_media")
-    healthy = set()
+    healthy, healthy_sources = set(), set()
     if media:
         with media.live.lock:
-            for (cam_id, _), item in list(media.live.streams.items()):
+            for (cam_id, stream_kind), item in list(media.live.streams.items()):
+                if str(stream_kind).startswith("audio-"):continue
                 manifest = item["directory"] / "index.m3u8"
                 try:
-                    if item["process"].poll() is None and time.time() - manifest.stat().st_mtime < 20:
+                    if item["process"].poll() is None and time.time() - manifest.stat().st_mtime < 20 and "#EXTINF:" in manifest.read_text(encoding="utf-8"):
                         camera = runtime.get_camera(cam_id)
-                        if camera: healthy.add(DataStore.connection_key(camera))
+                        if camera:
+                            healthy.add(DataStore.connection_key(camera));healthy_sources.add(str(camera["id"]))
                 except OSError: pass
+
+    def evidence(camera, reachable, method, port=None):
+        key=DataStore.connection_key(camera)
+        observations=getattr(runtime,"device_health",{}).get(key,{})
+        def fresh(checked,ttl):
+            return isinstance(checked,(int,float)) and not isinstance(checked,bool) and checked>0 and 0<=time.monotonic()-checked<ttl
+        recent=fresh(observations.get("management_checked"),120)
+        services={
+            "network":{"state":"reachable" if reachable else "unreachable","evidence":method},
+            "management":{"state":"confirmed" if recent and reachable else "unverified" if reachable else "unreachable", "evidence":"authenticated_operation" if recent and reachable else "not_authenticated"},
+            "live":{"state":"confirmed" if str(camera["id"]) in healthy_sources else "unverified","evidence":"recent_hls_segments" if str(camera["id"]) in healthy_sources else "not_playing"},
+            "archive":{"state":"confirmed" if reachable and fresh(observations.get("archive_sources",{}).get(str(camera["id"])),300) else "unverified","evidence":"delivered_media" if reachable and fresh(observations.get("archive_sources",{}).get(str(camera["id"])),300) else "not_tested"},
+            "audio":{"state":"unverified","live_audio":"unverified","archive_audio":"unverified","evidence":"not_tested"},
+        }
+        profiles={}
+        for stream in ("main","sub"):
+            probe=observations.get("live_audio_sources",{}).get(str(camera["id"])+"|"+stream,{})
+            profiles[stream]="supported" if probe.get("supported") is True else "unsupported" if probe.get("supported") is False else "unverified"
+            if not fresh(probe.get("checked"),300):profiles[stream]="unverified"
+        audio_state="supported" if "supported" in profiles.values() else "unsupported" if all(v=="unsupported" for v in profiles.values()) else "unverified"
+        services["audio"].update(state=audio_state,live_audio=audio_state,profiles=profiles,evidence="live_profile_probes" if any(v!="unverified" for v in profiles.values()) else "not_tested")
+        if port is not None:services["network"]["port"]=port
+        return services
 
     def probe(item):
         key, members = item
         camera = members[0]
         if key in healthy:
-            return members, {"online": True, "checked_at": stamp, "method": "live", "reason": "Получено актуальное видео"}
+            return members, {"online": True, "overall":"partial", "services":evidence(camera,True,"live"),
+                             "checked_at": stamp, "method": "live", "reason": "Видео получено; остальные службы проверяются независимо"}
         candidates = list(dict.fromkeys([int(camera.get("port", 34567 if camera.get("protocol") == "dvrip" else 80)),
                                         *[int(member.get("rtsp_port", 554)) for member in members]]))
         failures = []
@@ -131,19 +157,24 @@ def check_status(runtime, app, devices):
             for attempt in range(2 if port == candidates[0] else 1):
                 try:
                     with socket.create_connection((camera["ip"], port), timeout=1.5 + attempt * .5): pass
-                    runtime.hardware.record("status.online", camera, port_checked=port, duration_ms=round((time.monotonic() - began) * 1000), channels=len(members))
-                    return members, {"online": True, "checked_at": stamp, "port": port, "method": "tcp" if port == candidates[0] else "rtsp",
-                                     "reason": "Служба устройства отвечает" if port == candidates[0] else "Доступна служба RTSP; порт управления не ответил"}
+                    runtime.hardware.record("status.online", camera, port_checked=port, duration_ms=round((time.monotonic() - began) * 1000), channels=len(members),stage="network",result="port_open")
+                    method="tcp" if port==candidates[0] else "rtsp"
+                    return members, {"online": True, "overall":"partial", "services":evidence(camera,True,method,port), "checked_at": stamp, "port": port, "method": method,
+                                     "reason": "Сетевой порт отвечает; авторизация управления и медиа ещё не подтверждены" if port == candidates[0] else "RTSP-порт отвечает; управление не подтверждено"}
                 except OSError as exc: failures.append(type(exc).__name__)
         runtime.hardware.record("status.unreachable", camera, level="warning", ports_checked=candidates, errors=failures,
-                                duration_ms=round((time.monotonic() - began) * 1000), channels=len(members))
-        return members, {"online": False, "checked_at": stamp, "method": "tcp", "checked_ports": candidates,
-                         "reason": "Службы устройства не ответили. ICMP ping и наличие видеосигнала проверяются отдельно."}
+                                duration_ms=round((time.monotonic() - began) * 1000), channels=len(members),stage="network")
+        return members, {"online": False,"overall":"offline", "services":evidence(camera,False,"tcp"), "checked_at": stamp, "method": "tcp", "checked_ports": candidates,
+                         "reason": "Службы устройства не ответили. Причиной могут быть питание, сеть, маршрутизация или firewall; ICMP проверяется отдельно."}
 
     result = {}
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(physical)))) as pool:
         for members, status in pool.map(probe, physical.items()):
-            for camera in members: result[camera["id"]] = dict(status)
+            for camera in members:
+                services=evidence(camera,status["online"],status["method"],status.get("port"))
+                confirmed=all(services[k]["state"]=="confirmed" for k in ("management","live","archive"))
+                overall="online" if status["online"] and confirmed else "partial" if status["online"] else "offline"
+                result[camera["id"]] = {**status,"overall":overall,"services":services}
     return result, stamp
 
 
@@ -288,6 +319,7 @@ def register_catalog(app, runtime):
         files, summary = uploaded_backup()
         if request.form.get("sha256") != summary["sha256"]: raise ValueError("Backup изменился после проверки. Проверьте файл повторно")
         actor = runtime.current_user()["username"]
+        next_secret=os.getenv("FLASK_SECRET_KEY") or files[".flask_secret"].decode("utf-8").strip()
         runtime.maintenance = True
         try:
             media = app.extensions.get("vwshub_media")
@@ -295,19 +327,14 @@ def register_catalog(app, runtime):
                 media.live.stop_all()
                 with media.lock: operations = list(media.operations.values())
                 for operation in operations: operation["cancel"]()
-                with media.lock: media.files.clear(); media.audio_cache.clear()
+                with media.lock:
+                    media.files.clear(); media.audio_cache.clear()
+                    getattr(media,"live_audio_cache",{}).clear()
+                    getattr(media,"live_probe_cache",{}).clear()
             with runtime.store.lock:
-                folder = runtime.store.base_dir / "restore-backups"
-                folder.mkdir(exist_ok=True)
-                protected(folder,directory=True)
-                snapshot = io.BytesIO()
-                with zipfile.ZipFile(snapshot, "w", zipfile.ZIP_DEFLATED) as archive:
-                    for name in files: archive.writestr("data/" + name, (runtime.store.base_dir / name).read_bytes())
-                    archive.writestr("BACKUP.txt", "VWSHub: automatic snapshot before restore. Contains credentials and keys.")
-                safety = folder / (datetime.now(timezone.utc).strftime("before-restore-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8] + ".zip")
-                runtime.store._write_bytes(safety, snapshot.getvalue()); protected(safety)
+                runtime.store.images.snapshot("restore","restore-backups")
                 runtime.store.restore(files)
-                app.secret_key = os.getenv("FLASK_SECRET_KEY") or runtime.store.secret()
+                app.secret_key = next_secret
                 session.clear(); g.vwshub_user = None
         finally:
             runtime.maintenance = False

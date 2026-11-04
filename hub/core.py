@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo,ZoneInfoNotFoundError,available_timezones
 
 from flask import Flask,abort,current_app,g,has_request_context,jsonify,redirect,render_template,request,send_file,session,url_for
 from werkzeug.exceptions import HTTPException
@@ -29,17 +29,20 @@ from werkzeug.security import check_password_hash,generate_password_hash
 
 from .store import DataStore,DataCorruptError,DEFAULT_SETTINGS,safe_image
 from . import access, schema
+from .resources import PRESETS, configure
+from .localization import SUPPORTED_LOCALES, PUBLIC_LOCALES, timezone_preference
+from .appearance import theme_colors
 
-VERSION="0.8.5"
+VERSION="0.9.0"
 DEVELOPER="sedukindv"
-REPOSITORY="https://github.com/sedukindv/VWSHub"
+REPOSITORY="https://github.com/sedukindv/WVW"
 LOGIN_RE=re.compile(r"[A-Za-z0-9_.@-]{1,64}\Z")
 IDENTIFIER_RE=re.compile(r"[A-Za-z0-9_-]{1,100}\Z")
 
 def public_user(user):
     if not user:return None
     return {"username":user.get("username",""),"login":user.get("username",""),"alias":user.get("alias") or user.get("username",""),
-            "avatar":user.get("avatar", ""),"role":user.get("role","viewer"),"theme":user.get("theme","auto"),"language":user.get("language","ru"),
+            "avatar":user.get("avatar", ""),"timezone":user.get("timezone", ""),"role":user.get("role","viewer"),"theme":user.get("theme","auto"),"language":user.get("language","ru"),
             "group_ids":list(user.get("group_ids",[])),"group_access":{gid:user.get("group_access",{}).get(gid,"read") for gid in user.get("group_ids",[])},
             "archive_access":access.features(user)["archive_view"],"permissions":access.features(user),
             "grants":access.grants(user),"active":user.get("active",True),"can_edit":access.editor(user),"pending_grants":user.get("pending_grants",[])}
@@ -178,7 +181,7 @@ def public_settings(runtime):
     settings=runtime.settings()
     return {"version":VERSION,"developer":DEVELOPER,"repository":REPOSITORY,"timezone":settings["timezone"],"language":settings["language"],
             "snapshot_format":settings["snapshot_format"],"archive_format":settings["archive_format"],"resource_profile":settings["resources"]["profile"],
-            "max_live_streams":settings["resources"]["max_live_streams"]}
+            "max_live_streams":settings["resources"]["max_live_streams"],"supported_locales":PUBLIC_LOCALES,"hevc_support":settings.get("hevc_support",False)}
 
 def request_user_payload(data,existing=None):
     result=dict(existing or {})
@@ -192,7 +195,8 @@ def request_user_payload(data,existing=None):
     result["theme"]=data.get("theme",result.get("theme","auto"))
     if not isinstance(result["theme"],str) or result["theme"] not in {"auto","dark","light"}:raise ValueError("Неизвестная тема")
     result["language"]=data.get("language",result.get("language","ru"))
-    if not isinstance(result["language"],str) or result["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
+    if not isinstance(result["language"],str) or result["language"] not in SUPPORTED_LOCALES:raise ValueError("Неизвестный язык интерфейса")
+    result["timezone"]=timezone_preference(data.get("timezone",result.get("timezone","")))
     result["group_ids"]=ids(data.get("group_ids",result.get("group_ids",[])),"Группы пользователя")
     group_access=data.get("group_access",{gid:level for gid,level in result.get("group_access",{}).items() if gid in result["group_ids"]})
     if not isinstance(group_access,dict) or set(group_access)-set(result["group_ids"]) or any(not isinstance(v,str) or v not in {"read","edit"} for v in group_access.values()):raise ValueError("Права групп: только read/edit для назначенных групп")
@@ -283,7 +287,7 @@ def register_core(app,runtime):
         g.catalog_start_revision=runtime.store.revision
         if getattr(runtime,"maintenance",False) and request.endpoint!="health":return jsonify(error="Восстанавливается backup. Повторите запрос через несколько секунд"),503
         is_api=request.path.startswith("/api/")
-        public=request.endpoint in {"static","login","setup","health","bootstrap","favicon"} or request.path=="/api/branding" and request.method=="GET"
+        public=request.endpoint in {"static","login","setup","health","bootstrap","favicon","image_asset"} or request.path=="/api/branding" and request.method=="GET"
         if not public:
             user=runtime.current_user()
             if not user:
@@ -306,7 +310,7 @@ def register_core(app,runtime):
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Referrer-Policy"]="same-origin"
         response.headers["X-Frame-Options"]="SAMEORIGIN"
-        response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+        response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
         if request.path.startswith("/api/") or request.endpoint in {"index","login","setup"}:response.headers["Cache-Control"]="no-store"
         return response
 
@@ -366,12 +370,23 @@ def register_core(app,runtime):
         runtime.audit("auth.logout");session.clear();return redirect(url_for("login"))
     @app.get("/")
     def index():return template("index.html")
+    @app.get("/images/<name>")
+    def image_asset(name):
+        from .images import PREFIX
+        brand=runtime.settings()["branding"]
+        if PREFIX+name not in (brand.get("logo"),brand.get("favicon")) and not runtime.current_user():abort(401)
+        try:path=runtime.store.images.path(name)
+        except ValueError:abort(404)
+        if not path.is_file():abort(404)
+        response=send_file(path,conditional=True,max_age=86400)
+        response.headers["X-Content-Type-Options"]="nosniff"
+        response.headers["Cache-Control"]="private, max-age=86400"
+        return response
     @app.get("/favicon.ico")
     def favicon():
-        value=runtime.settings()["branding"].get("favicon","")
-        if value:
-            metadata,encoded=value.split(",",1)
-            return send_file(io.BytesIO(base64.b64decode(encoded)),mimetype=metadata.split(";")[0][5:])
+        from .images import image_name
+        name=image_name(runtime.settings()["branding"].get("favicon",""))
+        if name:return image_asset(name)
         return "",204
 
     @app.route("/api/profile",methods=["GET","POST"])
@@ -381,15 +396,16 @@ def register_core(app,runtime):
         data=body()
         with runtime.store.lock:
             users=runtime.store.get_users();target=next(u for u in users if u["username"]==me["username"])
-            for key in ("alias","avatar","theme","language"):
+            for key in ("alias","avatar","theme","language","timezone"):
                 if key not in data:continue
                 if key=="alias":target[key]=text(data[key],"Псевдоним",100) or target["username"]
                 elif key=="avatar":target[key]=safe_image(data[key])
                 elif key=="theme":
                     if data[key] not in {"auto","dark","light"}:raise ValueError("Неизвестная тема")
                     target[key]=data[key]
+                elif key=="timezone":target[key]=timezone_preference(data[key])
                 elif key=="language":
-                    if data[key] not in {"ru","en"}:raise ValueError("Язык: ru или en")
+                    if data[key] not in SUPPORTED_LOCALES:raise ValueError("Неизвестный язык интерфейса")
                     target[key]=data[key]
             if data.get("password"):
                 if not check_password_hash(target["password_hash"],str(data.get("current_password",""))):raise ValueError("Для смены пароля укажите текущий пароль")
@@ -450,10 +466,12 @@ def register_core(app,runtime):
     def invalidate_device(cam_id):
         media=app.extensions.get("vwshub_media")
         if not media:return
-        for stream in ("main","sub"):media.live.stop(cam_id,stream)
+        for stream in ("main","sub","audio-main","audio-sub"):media.live.stop(cam_id,stream)
         with media.lock:
             media.files={key:value for key,value in media.files.items() if key[0]!=str(cam_id)}
             media.audio_cache.pop(str(cam_id),None)
+            getattr(media,"live_audio_cache",{}).clear()
+            getattr(media,"live_probe_cache",{}).clear()
             operations=[value for value in getattr(media,"operations",{}).values() if value.get("camera")==str(cam_id)]
         for operation in operations:operation["cancel"]()
     app.extensions["vwshub_invalidate_camera"]=invalidate_device
@@ -608,34 +626,36 @@ def register_core(app,runtime):
 
     @app.route("/api/branding",methods=["GET","POST"])
     def branding():
-        settings=runtime.settings()
-        if request.method=="GET":return jsonify(settings["branding"])
+        if request.method=="GET":return jsonify(runtime.settings()["branding"])
         if not runtime.current_user() or runtime.current_user()["role"]!="admin":abort(403)
-        data=body();brand=dict(settings["branding"])
-        for key in ("name","subtitle"):
-            if key in data:brand[key]=text(data[key],"Название" if key=="name" else "Подпись",80,key=="name")
-        for key in ("logo","favicon"):
-            if key in data:brand[key]=safe_image(data[key])
-        for key in ("logo_icon","favicon_icon"):
-            if key in data:
-                if not isinstance(data[key],str):raise ValueError("Некорректное имя значка")
-                brand[key]="" if data[key]=="" else schema.icon(data[key])
-        for color_key in ("accent","icon_color"):
-            if color_key in data:
-                if not isinstance(data[color_key],str) or not re.fullmatch(r"#[0-9a-fA-F]{6}",data[color_key]):raise ValueError("Цвет: #RRGGBB")
-                brand[color_key]=data[color_key]
-        if "motion" in data:
-            if not isinstance(data["motion"],bool):raise ValueError("Анимация: логическое значение")
-            brand["motion"]=data["motion"]
-        for key,allowed in {"recorder_labels":{"ip","name"},"density":{"comfortable","compact"},"corners":{"rounded","square"}}.items():
-            if key in data:
-                if not isinstance(data[key],str) or data[key] not in allowed:raise ValueError("Неизвестный вариант оформления: "+key)
-                brand[key]=data[key]
-        if "show_clock" in data:
-            if not isinstance(data["show_clock"],bool):raise ValueError("Часы: логическое значение")
-            brand["show_clock"]=data["show_clock"]
-        if "wall_gap" in data:brand["wall_gap"]=integer(data["wall_gap"],"Расстояние между камерами",0,12)
-        with runtime.store.lock:settings=runtime.settings();settings["branding"]=brand;runtime.store.save_settings(settings)
+        data=body()
+        with runtime.store.lock:
+            settings=runtime.settings();brand=dict(settings["branding"])
+            for key in ("name","subtitle"):
+                if key in data:brand[key]=text(data[key],"Название" if key=="name" else "Подпись",80,key=="name")
+            for key in ("logo","favicon"):
+                if key in data:brand[key]=safe_image(data[key])
+            for key in ("logo_icon","favicon_icon"):
+                if key in data:
+                    if not isinstance(data[key],str):raise ValueError("Некорректное имя значка")
+                    brand[key]="" if data[key]=="" else schema.icon(data[key])
+            for color_key in ("accent","icon_color"):
+                if color_key in data:
+                    if not isinstance(data[color_key],str) or not re.fullmatch(r"#[0-9a-fA-F]{6}",data[color_key]):raise ValueError("Цвет: #RRGGBB")
+                    brand[color_key]=data[color_key]
+            if "theme_colors" in data:brand["theme_colors"]=theme_colors(data["theme_colors"])
+            if "motion" in data:
+                if not isinstance(data["motion"],bool):raise ValueError("Анимация: логическое значение")
+                brand["motion"]=data["motion"]
+            for key,allowed in {"recorder_labels":{"ip","name"},"density":{"comfortable","compact"},"corners":{"rounded","square"}}.items():
+                if key in data:
+                    if not isinstance(data[key],str) or data[key] not in allowed:raise ValueError("Неизвестный вариант оформления: "+key)
+                    brand[key]=data[key]
+            if "show_clock" in data:
+                if not isinstance(data["show_clock"],bool):raise ValueError("Часы: логическое значение")
+                brand["show_clock"]=data["show_clock"]
+            if "wall_gap" in data:brand["wall_gap"]=integer(data["wall_gap"],"Расстояние между камерами",0,12)
+            settings["branding"]=brand;runtime.store.save_settings(settings)
         runtime.audit("branding.updated");return jsonify(success=True,branding=brand)
 
     def metrics():
@@ -652,38 +672,35 @@ def register_core(app,runtime):
     @app.route("/api/settings",methods=["GET","POST"])
     @admin_required
     def settings():
-        values=runtime.settings()
-        if request.method=="GET":return jsonify(settings={**values,**public_settings(runtime)},metrics=metrics(),capabilities=capabilities())
+        if request.method=="GET":return jsonify(settings={**runtime.settings(),**public_settings(runtime)},metrics=metrics(),capabilities=capabilities(),resource_profiles=PRESETS,timezones=sorted(available_timezones()))
         data=body()
-        if "diagnostics" in data:
-            if not isinstance(data["diagnostics"],dict) or not isinstance(data["diagnostics"].get("enabled"),bool):raise ValueError("Диагностика: укажите enabled true/false")
-            values["diagnostics"]={"enabled":data["diagnostics"]["enabled"]}
-        if "language" in data:
-            if data["language"] not in {"ru","en"}:raise ValueError("Язык: ru или en")
-            values["language"]=data["language"]
-        if "timezone" in data:
-            try:ZoneInfo(str(data["timezone"]))
-            except (ZoneInfoNotFoundError,ValueError):raise ValueError("Неизвестный часовой пояс IANA") from None
-            values["timezone"]=str(data["timezone"])
-        if "snapshot_format" in data:
-            if data["snapshot_format"] not in {"jpeg","png","webp"}:raise ValueError("Формат снимка: jpeg/png/webp")
-            values["snapshot_format"]=data["snapshot_format"]
-        if "archive_format" in data and data["archive_format"]!="mp4":raise ValueError("Без перекодирования архив доступен в MP4")
-        if "resources" in data:
-            resource=data["resources"]
-            if not isinstance(resource,dict):raise ValueError("Некорректные ограничения ресурсов")
-            profile=resource.get("profile",values["resources"]["profile"])
-            if profile not in {"standard","maximum","custom"}:raise ValueError("Неизвестный профиль ресурсов")
-            chosen=dict(DEFAULT_SETTINGS["resources"])
-            if profile=="maximum":chosen.update(max_live_streams=64,max_archive_streams=12,archive_buffer_mb=64,archive_idle_seconds=300,ffmpeg_threads=0)
-            if profile=="custom":
-                chosen=dict(values["resources"])
-                bounds={"max_live_streams":(1,128),"max_archive_streams":(1,16),"archive_buffer_mb":(2,128),"archive_idle_seconds":(30,600),"ffmpeg_threads":(0,32)}
-                for key,bound in bounds.items():
-                    if key in resource:chosen[key]=integer(resource[key],key,*bound)
-            chosen["profile"]=profile;values["resources"]=chosen
-        with runtime.store.lock:runtime.store.save_settings(values)
+        with runtime.store.lock:
+            values=runtime.settings()
+            if "hevc_support" in data:
+                if not isinstance(data["hevc_support"],bool):raise ValueError("HEVC: требуется логическое значение")
+                values["hevc_support"]=data["hevc_support"]
+            if "diagnostics" in data:
+                if not isinstance(data["diagnostics"],dict) or not isinstance(data["diagnostics"].get("enabled"),bool):raise ValueError("Диагностика: укажите enabled true/false")
+                values["diagnostics"]={"enabled":data["diagnostics"]["enabled"]}
+            if "language" in data:
+                if data["language"] not in SUPPORTED_LOCALES:raise ValueError("Неизвестный язык интерфейса")
+                values["language"]=data["language"]
+            if "timezone" in data:
+                try:ZoneInfo(str(data["timezone"]))
+                except (ZoneInfoNotFoundError,ValueError):raise ValueError("Неизвестный часовой пояс IANA") from None
+                values["timezone"]=str(data["timezone"])
+            if "snapshot_format" in data:
+                if data["snapshot_format"] not in {"jpeg","png","webp"}:raise ValueError("Формат снимка: jpeg/png/webp")
+                values["snapshot_format"]=data["snapshot_format"]
+            if "archive_format" in data:
+                if data["archive_format"] not in ("mp4","avi","original"):raise ValueError("Формат архива: MP4, AVI или оригинальный поток")
+                values["archive_format"]=data["archive_format"]
+            if "resources" in data:
+                values["resources"]=configure(values["resources"],data["resources"],integer)
+            runtime.store.save_settings(values)
         runtime.audit("settings.updated",{"resources":values["resources"],"timezone":values["timezone"]});return jsonify(success=True,settings={**values,**public_settings(runtime)},metrics=metrics(),capabilities=capabilities())
+    @app.get("/api/timezones")
+    def timezones():return jsonify(timezones=sorted(available_timezones()))
     @app.get("/api/info")
     @admin_required
     def info():return jsonify(**public_settings(runtime),metrics=metrics())
@@ -696,10 +713,18 @@ def register_core(app,runtime):
     @admin_required
     def backup():
         output=io.BytesIO()
+        from .backup import MAX_BYTES
         with runtime.store.lock,zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as archive:
+            total=0
             for filename in ("users.json","groups.json","devices.json","recorders.json","settings.json",".camkey",".flask_secret"):
-                archive.writestr("data/"+filename,(runtime.store.base_dir/filename).read_bytes())
-            archive.writestr("BACKUP.txt","VWSHub0.8. Contains encrypted credentials and their key. Keep offline/private.\n")
+                raw=(runtime.store.base_dir/filename).read_bytes();total+=len(raw)
+                if total>MAX_BYTES:return jsonify(error="Backup превышает16МБ. Сохраните полную папку данных при остановленной службе."),413
+                archive.writestr("data/"+filename,raw)
+            for name,raw in runtime.store.images.iter_backup_files():
+                total+=len(raw)
+                if total>MAX_BYTES:return jsonify(error="Backup превышает16МБ. Сохраните полную папку данных при остановленной службе."),413
+                archive.writestr("data/"+name,raw)
+            archive.writestr("BACKUP.txt","WVW0.9.0. Contains credentials and keys. Keep offline/private.\n")
         output.seek(0);runtime.audit("server.backup_exported")
         return send_file(output,mimetype="application/zip",as_attachment=True,download_name="vwshub-backup-"+datetime.now().strftime("%Y%m%d-%H%M%S")+".zip")
     @app.post("/api/server/restart")
@@ -721,6 +746,9 @@ def create_app(data_dir=None,config=None):
     app=Flask(__name__,template_folder=str(project/"templates"),static_folder=str(project/"static"))
     app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","0")=="1",PERMANENT_SESSION_LIFETIME=timedelta(days=7),MAX_CONTENT_LENGTH=20*1024*1024,CSRF_ENABLED=True)
     if config:app.config.update(config)
+    if os.getenv("VWSHUB_TRUST_PROXY","0")=="1":
+        from .proxy import LoopbackProxy
+        app.wsgi_app=LoopbackProxy(app.wsgi_app)
     target=Path(data_dir or os.getenv("VWSHUB_DATA_DIR") or os.getenv("WEBVMS_DATA_DIR") or project/"data")
     store=DataStore(target,app.config.get("LEGACY_DATA_DIR",project));runtime=Runtime(store)
     app.secret_key=os.getenv("FLASK_SECRET_KEY") or store.secret()

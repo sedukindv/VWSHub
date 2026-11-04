@@ -1,0 +1,62 @@
+name: HEVC browser HTTPS
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: hevc-browser-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  chrome-edge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI: 'true'
+      WVW_PYTHON: python
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libnss3-tools ca-certificates
+      - run: python -m pip install -r requirements-dev.txt
+      - working-directory: tests/browser
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+      - name: Install official Chrome and Edge for the isolated runner
+        working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chrome msedge
+      - name: Trust disposable loopback QA identity only inside this ephemeral runner
+        shell: bash
+        run: |
+          task_tls="$RUNNER_TEMP/wvw-hevc-tls"
+          python tests/browser/create_test_tls.py "$task_tls"
+          sudo cp "$task_tls/ca.crt" /usr/local/share/ca-certificates/wvw-loopback-qa.crt
+          sudo update-ca-certificates
+          mkdir -p "$HOME/.pki/nssdb"
+          if [ ! -f "$HOME/.pki/nssdb/cert9.db" ]; then
+            certutil -N --empty-password -d "sql:$HOME/.pki/nssdb"
+          fi
+          certutil -A -d "sql:$HOME/.pki/nssdb" -t 'C,,' -n WVW-loopback-QA -i "$task_tls/ca.crt"
+          echo "NODE_EXTRA_CA_CERTS=$task_tls/ca.crt" >> "$GITHUB_ENV"
+          echo "WVW_BROWSER_CERT=$task_tls/server.crt" >> "$GITHUB_ENV"
+          echo "WVW_BROWSER_KEY=$task_tls/server.key" >> "$GITHUB_ENV"
+      - name: Decode real HEVC through the actual software player with TLS validation enabled
+        working-directory: tests/browser
+        run: npx --no-install playwright test --config hevc-https.config.cjs
+      - name: Upload browser evidence, never TLS keys
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: hevc-chrome-edge-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/browser/hevc-playwright-report/
+            tests/browser/hevc-test-results/
+          if-no-files-found: warn
+          retention-days: 14

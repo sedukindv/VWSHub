@@ -1,0 +1,15 @@
+{
+  "name": "wvw-browser-regression",
+  "version": "0.9.0",
+  "private": true,
+  "description": "Loopback-only synthetic WVW browser regression tests",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "playwright test --grep-invert @visual",
+    "test:visual": "playwright test --grep @visual",
+    "visual:update": "playwright test --grep @visual --update-snapshots=all",
+    "test:all": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": { "@playwright/test": "1.64.1" }
+}

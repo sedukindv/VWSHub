@@ -1,4 +1,4 @@
-/* VWSHub 0.8.5 application shell and administration. No external UI dependencies. */
+/* WVW 0.9.0 application shell and administration. No external UI dependencies. */
 (() => {
   "use strict";
   const $ = (s, r = document) => r.querySelector(s),
@@ -249,8 +249,8 @@
       "Keep files containing passwords in a secure place.",
     "Экспорт включает подключения, группы и имена устройств. По умолчанию пароли исключены.":
       "Exports include connections, groups and recorder names. Passwords are omitted by default.",
-    "Выберите JSON, экспортированный из VWSHub.":
-      "Choose a JSON catalog exported from VWSHub.",
+    "Выберите JSON, экспортированный из WVW.":
+      "Choose a JSON catalog exported from WVW.",
     "Файл камер": "Camera file",
     "Режим импорта": "Import mode",
     "Добавить новые камеры": "Add new cameras",
@@ -262,7 +262,7 @@
     Импортировано: "Imported",
     Пропущено: "Skipped",
     "JSON не больше 16 МБ": "JSON must be at most 16 MB",
-    "Неверный файл камер VWSHub": "Invalid VWSHub camera catalog",
+    "Неверный файл камер WVW": "Invalid WVW camera catalog",
     "Это имя используется на сайте. Имя и настройки оборудования сохраняются.":
       "This label is used on the site. The hardware hostname and settings are preserved.",
     "При сохранении приложение прочитает доступные каналы и добавит новые камеры. Существующие подключения сохраняются.":
@@ -313,8 +313,7 @@
     "Состояние проверяется при открытии страницы, после сохранения камеры и по кнопке «Обновить статус».":
       "Status is checked on opening this page, after saving a camera, and when Refresh status is selected.",
   });
-  const t = (text) =>
-    state.language === "en" && Object.hasOwn(EN, text) ? EN[text] : text;
+  const t = (text) => window.WVWI18n.translate(text, state.language, EN[text] || text);
   window.vwsTranslate = t;
   const h = (value) =>
     String(value ?? "").replace(
@@ -416,7 +415,7 @@
   const avatar = (u) =>
     u?.avatar
       ? `<span class="avatar"><img src="${h(u.avatar)}" alt=""></span>`
-      : `<span class="avatar">${h((u?.alias || u?.username || "?").slice(0, 1).toUpperCase())}</span>`;
+      : `<span class="avatar" data-no-i18n>${h((u?.alias || u?.username || "?").slice(0, 1).toUpperCase())}</span>`;
   let fieldSequence = 0;
   function formField(label, contents, help = "") {
     let target = "";
@@ -437,7 +436,7 @@
     `<button type="button" id="${id}" class="btn ${cls}">${icon(symbol)}${h(t(label))}</button>`;
   const ib = (action, id, label, symbol) =>
     `<button type="button" class="icon-btn" data-action="${action}" data-id="${h(id)}" title="${h(t(label))}" aria-label="${h(t(label))}">${icon(symbol)}</button>`;
-  function page(title, desc, actions, body, kicker = "VWSHUB WORKSPACE") {
+  function page(title, desc, actions, body, kicker = "WVW WORKSPACE") {
     const template = document.createElement("template");
     template.innerHTML = body;
     const toolbar = [...template.content.children].find((el) =>
@@ -515,18 +514,19 @@
       b.icon_color || "#71809c",
     );
     document.body.dataset.motion = b.motion === false ? "off" : "on";
-    document.body.dataset.density = b.density || "comfortable";
-    document.body.dataset.corners = b.corners || "rounded";
+    document.body.removeAttribute("data-density");
+    document.body.removeAttribute("data-corners");
+    window.WVWThemes.apply(document.documentElement, b, state.user.theme || "auto");
     document.documentElement.style.setProperty(
       "--wall-gap",
       `${Number(b.wall_gap ?? 3)}px`,
     );
-    document.title = b.name || "VWSHub";
+    document.title = b.name || "WVW";
     $("#brand").innerHTML =
-      `<span class="brand-mark">${b.logo ? `<img src="${h(b.logo)}" alt="">` : window.VWSIcons.html(b.logo_icon || "brand")}</span><span class="brand-copy"><strong>${h(b.name)}</strong><small>${h(b.subtitle)}</small></span>`;
+      `<span class="brand-mark">${b.logo ? `<img src="${h(b.logo)}" alt="">` : (b.logo_icon ? window.VWSIcons.html(b.logo_icon) : '<img src="/static/brand/logo.png" alt="WVW">')}</span><span class="brand-copy"><strong data-no-i18n>${h(b.name)}</strong><small>${h(b.subtitle)}</small></span>`;
     const favicon =
       b.favicon ||
-      (b.favicon_icon ? window.VWSIcons.dataURL(b.favicon_icon, b.accent) : "");
+      (b.favicon_icon ? window.VWSIcons.dataURL(b.favicon_icon, b.accent) : "/static/brand/favicon.png");
     if (favicon) {
       let link = $("#site-favicon");
       if (!link) {
@@ -539,7 +539,7 @@
     } else $("#site-favicon")?.remove();
   }
   function renderShell() {
-    document.documentElement.lang = state.language;
+    window.WVWI18n.setLanguage(state.language);
     $("#navigation").setAttribute("aria-label", t("Навигация"));
     $("#theme-switch").setAttribute("aria-label", t("Тема"));
     $("#sidebar-collapse").setAttribute(
@@ -604,7 +604,9 @@
         }),
     );
     $("#user-button").innerHTML =
-      `${avatar(state.user)}<span class="user-copy"><strong>${h(state.user.alias || state.user.username)}</strong><small>${t(state.user.role === "admin" ? "Администратор" : Object.values(state.user.group_access || {}).includes("edit") ? "Редактор групп" : "Просмотр без управления")}</small></span>`;
+      `${avatar(state.user)}<span class="user-copy"><strong data-no-i18n>${h(state.user.alias || state.user.username)}</strong><small>${t(state.user.role === "admin" ? "Администратор" : Object.values(state.user.group_access || {}).includes("edit") ? "Редактор групп" : "Просмотр без управления")}</small></span>`;
+    $("#user-button").setAttribute("aria-label", t("Мой профиль"));
+    $("#user-button").title = t("Мой профиль");
     $("#user-button").onclick = openProfile;
     $("#logout").innerHTML = icon("logout");
     $("#logout").title = t("Выйти");
@@ -651,8 +653,8 @@
               },
             }),
           );
-        } else if (!document.querySelector("#modal-root .modal")) {
-          await showView(state.view);
+        } else if (!document.querySelector("#modal-root .modal, #brand-form[data-dirty=true], #settings-form[data-dirty=true]")) {
+          await showView(state.view, { preserveMenu: true });
         }
       }
     } catch (_) {
@@ -670,7 +672,7 @@
     ++pageGeneration;
     state.view = view;
     document.body.dataset.view = view;
-    document.body.classList.remove("menu-open");
+    if (!extra.preserveMenu) document.body.classList.remove("menu-open");
     renderShell();
     const main = $("#main-content");
     try {
@@ -784,7 +786,7 @@
       );
     });
     const select = (id, label, values, value) =>
-      `<label class="camera-filter"><span>${t(label)}</span><select id="${id}" class="select"><option value="">${t("Все")}</option>${values.map(([key, name]) => `<option value="${h(key)}" ${key === value ? "selected" : ""}>${h(id === "camera-group-filter" || id === "camera-recorder-filter" ? name : t(name))}</option>`).join("")}</select></label>`;
+      `<label class="camera-filter"><span>${t(label)}</span><select id="${id}" class="select"><option value="">${t("Все")}</option>${values.map(([key, name]) => `<option ${["camera-group-filter","camera-recorder-filter"].includes(id) && key !== "__none" ? "data-no-i18n" : ""} value="${h(key)}" ${key === value ? "selected" : ""}>${h(id === "camera-group-filter" || id === "camera-recorder-filter" ? name : t(name))}</option>`).join("")}</select></label>`;
     const rows = filtered
       .map((c) => {
         const status = state.statuses[c.id];
@@ -795,7 +797,7 @@
           : c.can_edit
             ? ib("camera-rename", c.id, "Изменить название", "edit")
             : "";
-        return `<tr><td><div class="cell-name"><span class="cell-icon">${icon(c.protocol === "dvrip" ? "server" : "camera")}</span><div><strong>${h(c.name)}</strong><small>${c.protocol === "dvrip" ? `DVRIP · CH ${Number(c.channel || 0) + 1}` : "ONVIF / RTSP"}</small></div></div></td><td><strong class="recorder-label">${h(c.recorder_name || c.ip)}</strong><span class="type-code">${h(c.ip)}:${h(c.port)}</span><div class="small-muted">RTSP ${h(c.rtsp_port || 554)}</div></td><td><span class="badge ${status?.online ? "green" : status ? "red" : ""}" title="${h(status?.reason || t("Не проверен"))}"><i class="dot ${status?.online ? "online" : status ? "offline" : ""}"></i>${t(status?.online ? "В сети" : status ? "Не в сети" : "Не проверен")}</span>${status?.method === "rtsp" ? `<small class="status-source">RTSP</small>` : ""}</td><td><div class="badge-list">${(c.group_names || []).map((name) => `<span class="badge blue">${h(name)}</span>`).join("") || "—"}</div></td><td class="actions-column"><div class="table-actions">${actions || '<span class="small-muted">—</span>'}</div></td></tr>`;
+        return `<tr><td><div class="cell-name"><span class="cell-icon">${icon(c.protocol === "dvrip" ? "server" : "camera")}</span><div><strong data-no-i18n>${h(c.name)}</strong><small>${c.protocol === "dvrip" ? `DVRIP · CH ${Number(c.channel || 0) + 1}` : "ONVIF / RTSP"}</small></div></div></td><td><strong class="recorder-label" data-no-i18n>${h(c.recorder_name || c.ip)}</strong><span class="type-code">${h(c.ip)}:${h(c.port)}</span><div class="small-muted">RTSP ${h(c.rtsp_port || 554)}</div></td><td><span class="badge ${status?.overall === "partial" ? "warning" : status?.online ? "green" : status ? "red" : ""}" title="${h(status?.reason || t("Не проверен"))}"><i class="dot ${status?.online ? "online" : status ? "offline" : ""}"></i>${t(status?.overall === "partial" ? "Частично доступно" : status?.online ? "В сети" : status ? "Не в сети" : "Не проверен")}</span>${status?.method === "rtsp" ? `<small class="status-source">RTSP</small>` : ""}</td><td><div class="badge-list">${(c.group_names || []).map((name) => `<span class="badge blue" data-no-i18n>${h(name)}</span>`).join("") || "—"}</div></td><td class="actions-column"><div class="table-actions">${actions || '<span class="small-muted">—</span>'}</div></td></tr>`;
       })
       .join("");
     main.innerHTML = page(
@@ -942,16 +944,10 @@
       else if (b?.isConnected) b.disabled = false;
     }
   }
-  function cameraCount(n) {
-    if (state.language === "en")
-      return `${n} ${n === 1 ? "camera" : "cameras"}`;
-    const a = n % 10,
-      b = n % 100;
-    return `${n} ${a === 1 && b !== 11 ? "камера" : a >= 2 && a <= 4 && (b < 12 || b > 14) ? "камеры" : "камер"}`;
-  }
+  function cameraCount(n) { return window.WVWI18n.count(n,"camera",state.language); }
   function groupChecks(chosen = [], name = "group_ids") {
     return state.groups.length
-      ? `<div class="check-picker">${state.groups.length > 6 ? `<input class="field" type="search" data-check-search aria-label="${t("Поиск групп")}" placeholder="${t("Поиск групп")}">` : ""}<div class="check-list">${state.groups.map((g) => `<label class="check-item" data-search="${h(g.name)}"><input type="checkbox" name="${name}" value="${h(g.id)}" ${chosen.includes(g.id) ? "checked" : ""}><span>${h(g.name)}<small>${cameraCount(g.camera_ids.length)}</small></span></label>`).join("")}</div></div>`
+      ? `<div class="check-picker">${state.groups.length > 6 ? `<input class="field" type="search" data-check-search aria-label="${t("Поиск групп")}" placeholder="${t("Поиск групп")}">` : ""}<div class="check-list">${state.groups.map((g) => `<label class="check-item" data-search="${h(g.name)}"><input type="checkbox" name="${name}" value="${h(g.id)}" ${chosen.includes(g.id) ? "checked" : ""}><span><span data-no-i18n>${h(g.name)}</span><small>${cameraCount(g.camera_ids.length)}</small></span></label>`).join("")}</div></div>`
       : `<span class="muted">${t("Нет групп")}</span>`;
   }
   function groupAccessChecks(user) {
@@ -960,7 +956,7 @@
         .map((g) => {
           const checked = user.group_ids?.includes(g.id),
             level = user.group_access?.[g.id] || "read";
-          return `<div class="check-item group-access-row" data-search="${h(g.name)}"><label><input type="checkbox" name="group_ids" value="${h(g.id)}" ${checked ? "checked" : ""}><span>${h(g.name)}</span></label><select class="select" name="access_${h(g.id)}" aria-label="${h(t("Доступ к группе") + " " + g.name)}" ${checked ? "" : "disabled"}><option value="read" ${level === "read" ? "selected" : ""}>${t("Чтение")}</option><option value="edit" ${level === "edit" ? "selected" : ""}>${t("Редактирование")}</option></select></div>`;
+          return `<div class="check-item group-access-row" data-search="${h(g.name)}"><label><input type="checkbox" name="group_ids" value="${h(g.id)}" ${checked ? "checked" : ""}><span data-no-i18n>${h(g.name)}</span></label><select class="select" name="access_${h(g.id)}" aria-label="${h(t("Доступ к группе") + " " + g.name)}" ${checked ? "" : "disabled"}><option value="read" ${level === "read" ? "selected" : ""}>${t("Чтение")}</option><option value="edit" ${level === "edit" ? "selected" : ""}>${t("Редактирование")}</option></select></div>`;
         })
         .join("") || `<span class="help">${t("Нет групп")}</span>`
     }</div></div>`;
@@ -1091,11 +1087,11 @@
     const cards = list
       .map((g) => {
         const cams = state.cameras.filter((c) => g.camera_ids.includes(c.id));
-        return `<article class="group-card"><header class="group-card-head"><div><h2>${h(g.name)}</h2><small>${cameraCount(cams.length)}</small></div><span class="group-icon">${icon("folder")}</span></header><div class="group-preview">${Array.from({ length: 4 }, (_, i) => `<span>${icon(cams[i] ? "camera" : "grid")}</span>`).join("")}</div><div class="badge-list group-camera-badges">${cams
+        return `<article class="group-card"><header class="group-card-head"><div><h2 data-no-i18n>${h(g.name)}</h2><small>${cameraCount(cams.length)}</small></div><span class="group-icon">${icon("folder")}</span></header><div class="group-preview">${Array.from({ length: 4 }, (_, i) => `<span>${icon(cams[i] ? "camera" : "grid")}</span>`).join("")}</div><div class="badge-list group-camera-badges">${cams
           .slice(0, 3)
           .map(
             (c) =>
-              `<span class="badge" title="${h(c.name)}">${h(c.name)}</span>`,
+              `<span class="badge" title="${h(c.name)}" data-no-i18n>${h(c.name)}</span>`,
           )
           .join(
             "",
@@ -1205,7 +1201,7 @@
     const rows = state.users
       .map(
         (u) =>
-          `<tr><td><div class="cell-name">${avatar(u)}<div><strong>${h(u.alias || u.username)}</strong><small>${t("Логин")}: ${h(u.username)}</small></div></div></td><td><span class="badge ${u.role === "admin" ? "blue" : ""}">${t(u.role === "admin" ? "Администратор" : "Пользователь")}</span></td><td><div class="badge-list">${u.role === "admin" ? '<span class="small-muted">Все группы</span>' : (u.group_ids || []).map((id) => `<span class="badge">${h(state.groups.find((g) => g.id === id)?.name || id)} · ${t(u.group_access?.[id] === "edit" ? "Редактирование" : "Чтение")}</span>`).join("") || '<span class="small-muted">—</span>'}</div></td><td><span class="badge ${u.role === "admin" || u.archive_access ? "green" : ""}">${t(u.role === "admin" || u.archive_access ? "Разрешён" : "Запрещён")}</span></td><td><div class="table-actions">${ib("user-edit", u.username, "Изменить", "edit")}${u.username !== state.user.username ? ib("user-delete", u.username, "Удалить", "trash") : ""}</div></td></tr>`,
+          `<tr><td><div class="cell-name">${avatar(u)}<div><strong data-no-i18n>${h(u.alias || u.username)}</strong><small>${t("Логин")}: <span data-no-i18n>${h(u.username)}</span></small></div></div></td><td><span class="badge ${u.role === "admin" ? "blue" : ""}">${t(u.role === "admin" ? "Администратор" : "Пользователь")}</span></td><td><div class="badge-list">${u.role === "admin" ? '<span class="small-muted">Все группы</span>' : (u.group_ids || []).map((id) => `<span class="badge"><span data-no-i18n>${h(state.groups.find((g) => g.id === id)?.name || id)}</span> · ${t(u.group_access?.[id] === "edit" ? "Редактирование" : "Чтение")}</span>`).join("") || '<span class="small-muted">—</span>'}</div></td><td><span class="badge ${u.role === "admin" || u.archive_access ? "green" : ""}">${t(u.role === "admin" || u.archive_access ? "Разрешён" : "Запрещён")}</span></td><td><div class="table-actions">${ib("user-edit", u.username, "Изменить", "edit")}${u.username !== state.user.username ? ib("user-delete", u.username, "Удалить", "trash") : ""}</div></td></tr>`,
       )
       .join("");
     $("#main-content").innerHTML = page(
@@ -1248,7 +1244,7 @@
     modal(
       user ? "Изменить" : "Добавить пользователя",
       "",
-      `<form id="user-form" class="form-stack"><div class="upload-preview"><span id="user-image">${avatar(u)}</span><div>${button("user-image-add", "Выбрать изображение", "upload")}<input type="file" id="user-image-file" class="file-hidden" accept="image/png,image/jpeg,image/webp"></div></div><div class="form-grid">${formField("Логин", input("username", u.username, `required maxlength="80" ${user ? "readonly" : ""}`))}${formField("Псевдоним", input("alias", u.alias || "", 'maxlength="100"'))}${formField("Роль", `<select class="select" name="role"><option value="viewer" ${u.role === "viewer" ? "selected" : ""}>${t("Пользователь")}</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>${t("Администратор")}</option></select>`)}${formField("Новый пароль", input("password", "", 'type="password" autocomplete="new-password" minlength="10" ' + (user ? "" : "required")))}${formField("Язык", `<select class="select" name="language"><option value="ru" ${u.language === "ru" ? "selected" : ""}>Русский</option><option value="en" ${u.language === "en" ? "selected" : ""}>English</option></select>`)}</div><div id="viewer-permissions" class="form-stack"><div class="form-field"><label>${t("Доступные группы")}</label>${groupAccessChecks(u)}<small>${t("Камеры доступны только из назначенных групп.")}</small></div><label class="check-item"><input type="checkbox" name="archive_access" ${u.archive_access ? "checked" : ""}><span>${t("Разрешить архив")}</span></label></div></form>`,
+      `<form id="user-form" class="form-stack"><div class="upload-preview"><span id="user-image">${avatar(u)}</span><div>${button("user-image-add", "Выбрать изображение", "upload")}<input type="file" id="user-image-file" class="file-hidden" accept="image/png,image/jpeg,image/webp"></div></div><div class="form-grid">${formField("Логин", input("username", u.username, `required maxlength="80" ${user ? "readonly" : ""}`))}${formField("Псевдоним", input("alias", u.alias || "", 'maxlength="100"'))}${formField("Роль", `<select class="select" name="role"><option value="viewer" ${u.role === "viewer" ? "selected" : ""}>${t("Пользователь")}</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>${t("Администратор")}</option></select>`)}${formField("Новый пароль", input("password", "", 'type="password" autocomplete="new-password" minlength="10" ' + (user ? "" : "required")))}${formField("Язык", `<select class="select" name="language">${window.WVWI18n.options(u.language)}</select>`)}</div><div id="viewer-permissions" class="form-stack"><div class="form-field"><label>${t("Доступные группы")}</label>${groupAccessChecks(u)}<small>${t("Камеры доступны только из назначенных групп.")}</small></div><label class="check-item"><input type="checkbox" name="archive_access" ${u.archive_access ? "checked" : ""}><span>${t("Разрешить архив")}</span></label></div></form>`,
       `<span class="modal-note">${t("Доступ к архиву")}</span><button class="btn btn-primary" type="submit" form="user-form">${icon("check")}${t("Сохранить")}</button>`,
     );
     const f = $("#user-form"),
@@ -1314,7 +1310,7 @@
         const detail = hardware
           ? { device: entry.device, ...entry.detail }
           : entry.detail || "";
-        return `<tr><td class="log-time">${h(entry.time || entry.timestamp || entry.at || "")}</td><td>${h(hardware ? entry.level || "info" : entry.actor || entry.user || "system")}</td><td><span class="badge ${entry.level === "error" ? "red" : ""}">${h(entry.action || entry.event || "")}</span></td><td class="log-detail">${h(typeof detail === "object" ? JSON.stringify(detail) : detail)}</td></tr>`;
+        return `<tr><td class="log-time">${h(window.WVWI18n.dateTime(entry.time || entry.timestamp || entry.at || "",state.language,state.user.timezone || state.public_settings.timezone))}</td><td data-no-i18n>${h(hardware ? entry.level || "info" : entry.actor || entry.user || "system")}</td><td><span class="badge ${entry.level === "error" ? "red" : ""}">${h(entry.action || entry.event || "")}</span></td><td class="log-detail">${h(typeof detail === "object" ? JSON.stringify(detail) : detail)}</td></tr>`;
       })
       .join("");
     $("#main-content").innerHTML = page(
@@ -1345,44 +1341,66 @@
   }
   function renderCustomize() {
     const b = state.branding,
-      L = (ru, en) => (state.language === "en" ? en : ru);
+      L = (ru, en) => window.WVWI18n.translate(ru, state.language, en);
     let logo = b.logo || "",
       favicon = b.favicon || "",
       logoIcon = b.logo_icon || "",
       faviconIcon = b.favicon_icon || "";
-    const defaults = { accent: "#526cf5", icon_color: "#71809c" };
-    const colorSetting = (name, label, help, colors) =>
-      formField(
-        label,
-        `<div class="brand-color-control"><label class="brand-color-value"><input type="color" id="brand-${name}" name="${name}" value="${h(b[name] || defaults[name])}" aria-label="${h(label)}"><span data-color-value="${name}">${h(b[name] || defaults[name])}</span></label><div class="color-swatches">${colors.map((color) => `<button type="button" data-palette="${name}" data-color="${color}" style="--swatch:${color}" aria-label="${h(label)}: ${color}" title="${color}"></button>`).join("")}</div><button class="btn btn-sm" type="button" data-color-default="${name}">${icon("rotate-ccw")}${h(L("По умолчанию", "Default"))}</button></div>`,
-        help,
-      );
     const assetPanel = (kind, title) =>
       `<section class="panel"><div class="panel-head"><h2 class="panel-title">${h(title)}</h2></div><div class="panel-body brand-asset"><span id="${kind}-preview" class="${kind === "logo" ? "brand-mark" : "avatar"} brand-asset-preview"></span><div class="brand-asset-actions">${button(kind + "-upload", "Выбрать изображение", "upload")}<button class="btn" type="button" id="${kind}-icon">${icon("shapes")}${h(L("Выбрать значок", "Choose icon"))}</button><button class="btn btn-sm" type="button" id="${kind}-clear">${icon("rotate-ccw")}${h(L("По умолчанию", "Default"))}</button></div></div></section>`;
     $("#main-content").innerHTML = page(
       "Название и оформление",
       "Оформление применяется ко всем пользователям и странице входа.",
       `<button type="submit" form="brand-form" class="btn btn-primary">${icon("check")}${t("Сохранить")}</button>`,
-      `<form id="brand-form" class="settings-grid"><div class="form-stack"><section class="panel"><div class="panel-head"><h2 class="panel-title">${h(L("Интерфейс", "Interface"))}</h2>${icon("palette")}</div><div class="panel-body form-stack"><div class="form-grid">${formField("Название сайта", input("name", b.name, 'id="brand-name" required maxlength="80"'))}${formField("Подпись", input("subtitle", b.subtitle, 'id="brand-subtitle" maxlength="80"'))}</div><div class="form-grid">${formField("Плотность интерфейса", `<select class="select" name="density" id="brand-density"><option value="comfortable" ${b.density !== "compact" ? "selected" : ""}>${t("Комфортная")}</option><option value="compact" ${b.density === "compact" ? "selected" : ""}>${t("Компактная")}</option></select>`)}${formField("Углы элементов", `<select class="select" name="corners" id="brand-corners"><option value="rounded" ${b.corners !== "square" ? "selected" : ""}>${t("Скруглённые")}</option><option value="square" ${b.corners === "square" ? "selected" : ""}>${t("Прямые")}</option></select>`)}</div>${formField("Отступ видеостены, px", `<div class="brand-range"><input type="range" id="brand-wall-gap" name="wall_gap" min="0" max="12" value="${Number(b.wall_gap ?? 3)}"><output for="brand-wall-gap">${Number(b.wall_gap ?? 3)} px</output></div>`)}<div class="form-grid"><label class="check-item"><input type="checkbox" name="show_clock" ${b.show_clock !== false ? "checked" : ""}><span>${t("Показывать часы на видеостене")}</span></label><label class="check-item"><input type="checkbox" name="motion" ${b.motion !== false ? "checked" : ""}><span>${t("Включить анимацию")}</span></label></div></div></section><section class="panel"><div class="panel-head"><h2 class="panel-title">${h(L("Цвета", "Colors"))}</h2></div><div class="panel-body form-stack">${colorSetting("accent", L("Акцентный цвет", "Accent color"), L("Кнопки, активные значки, флажки, ссылки и рамки.", "Buttons, active icons, checkboxes, links and focus borders."), ["#526cf5", "#13a08a", "#c56c21", "#9360cf", "#ce4d6c", "#2877bb"])}${colorSetting("icon_color", L("Цвет значков", "Icon color"), L("Обычные значки. Состояния ошибок и подключения сохраняют свои цвета.", "Regular icons. Connection and error indicators keep their status colors."), ["#71809c", "#465269", "#4b79a8", "#8c6fc5", "#279b85", "#c68140"])}<div class="brand-style-preview"><span class="brand-preview-label">${h(L("Предпросмотр", "Preview"))}</span><span class="brand-preview-icons">${icon("camera")}${icon("layers-3")}${icon("users")}</span><span class="btn btn-primary">${icon("check")}${h(L("Активный элемент", "Active control"))}</span><span class="brand-check-preview">${icon("check")}</span></div></div></section></div><div class="form-stack">${assetPanel("logo", t("Логотип"))}${assetPanel("favicon", t("Фавикон"))}</div></form><input id="branding-file" class="file-hidden" type="file" accept="image/png,image/jpeg,image/webp">`,
+      `<form id="brand-form" class="settings-grid"><div class="form-stack"><section class="panel"><div class="panel-head"><h2 class="panel-title">${h(L("Интерфейс", "Interface"))}</h2>${icon("palette")}</div><div class="panel-body form-stack"><div class="form-grid">${formField("Название сайта", input("name", b.name, 'id="brand-name" required maxlength="80"'))}${formField("Подпись", input("subtitle", b.subtitle, 'id="brand-subtitle" maxlength="80"'))}</div>${formField("Отступ видеостены, px", `<div class="brand-range"><input type="range" id="brand-wall-gap" name="wall_gap" min="0" max="12" value="${Number(b.wall_gap ?? 3)}"><output for="brand-wall-gap">${Number(b.wall_gap ?? 3)} px</output></div>`)}<div class="form-grid"><label class="check-item"><input type="checkbox" name="show_clock" ${b.show_clock !== false ? "checked" : ""}><span>${t("Показывать часы на видеостене")}</span></label><label class="check-item"><input type="checkbox" name="motion" ${b.motion !== false ? "checked" : ""}><span>${t("Включить анимацию")}</span></label></div></div></section></div><div class="form-stack">${assetPanel("logo", t("Логотип"))}${assetPanel("favicon", t("Фавикон"))}</div></form><input id="branding-file" class="file-hidden" type="file" accept="image/png,image/jpeg,image/webp">`,
     );
     const form = $("#brand-form");
+    let draftVersion = 0;
+    const markDirty = () => { ++draftVersion; form.dataset.dirty = "true"; };
+    form.addEventListener("input", markDirty);
+    form.addEventListener("change", markDirty);
+    const themeDraft = Object.fromEntries(["light", "dark"].map(theme => [theme, window.WVWThemes.colors(b, theme)]));
+    const themeNames = { background: "Фон приложения", surface: "Поверхность", surface_alt: "Вторичная поверхность", text: "Основной текст", text_soft: "Вторичный текст", muted: "Приглушённый текст", line: "Границы", accent: "Акцентный цвет", icon_color: "Цвет значков", success: "Успех", warning: "Предупреждение", danger: "Ошибка", info: "Информация" };
+    const themePanel = document.createElement("section");
+    themePanel.className = "panel theme-editor-panel";
+    const colorControl=(theme,key,primary=false)=>`<label class="theme-color-control ${primary?"is-primary":""}"><input type="color" data-theme-color="${theme}" data-color-key="${key}" value="${h(themeDraft[theme][key] || window.WVWThemes.buttonColors(themeDraft[theme]).foreground)}" aria-label="${h(t(key==="button_text"?"Цвет текста кнопок":themeNames[key]))} — ${h(t(theme==="light"?"Светлая":"Тёмная"))}"><span>${h(t(key==="button_text"?"Цвет текста кнопок":themeNames[key]))}</span><code data-color-value="${theme}:${key}" data-no-i18n>${h(themeDraft[theme][key] || window.WVWThemes.buttonColors(themeDraft[theme]).foreground)}</code></label>`;
+    themePanel.innerHTML = `<div class="panel-head"><h2 class="panel-title">${icon("paintbrush")}${h(t("Темы и цвета"))}</h2><span class="theme-editor-caption">${h(t("Предпросмотр"))}</span></div><div class="panel-body"><div class="theme-editor-grid">${["light","dark"].map(theme=>`<section class="theme-editor" data-theme-editor="${theme}"><div class="theme-editor-head"><h3>${icon(theme==="light"?"sun":"moon")}${h(t(theme==="light"?"Светлая":"Тёмная"))}</h3><button type="button" class="btn btn-sm" data-reset-theme="${theme}">${icon("rotate-ccw")}${h(t("По умолчанию"))}</button></div><div class="theme-preview" data-theme-preview="${theme}"><div class="theme-preview-mini-nav"><span class="theme-preview-brand">${icon("layers-3")}</span><strong>${h(t("Рабочее пространство"))}</strong><i></i></div><div class="theme-preview-content"><div class="theme-preview-heading"><strong>${h(t("Просмотр"))}</strong><span>${h(t("Предпросмотр"))}</span></div><div class="theme-preview-camera"><span class="theme-preview-camera-icon">${icon("camera")}</span><div><strong>${h(t("Камера"))} ${h(window.WVWI18n.number(1,state.language))}</strong><small>${h(t("В сети"))}</small></div><span class="theme-preview-check">${icon("check")}</span></div><div class="theme-preview-row"><span class="theme-preview-button">${icon("check")}${h(t("Сохранить"))}</span><span class="theme-preview-secondary">${h(t("Отмена"))}</span></div><span class="theme-preview-status">${icon("check")}${h(t("Настройки сохранены"))}</span></div></div><div class="theme-primary-colors">${["accent","background","text"].map(key=>colorControl(theme,key,true)).join("")}</div><div class="theme-button-ink"><div>${colorControl(theme,"button_text")}</div><button type="button" class="btn btn-sm" data-auto-button-text="${theme}" aria-pressed="${!themeDraft[theme].button_text}">${h(t("Авто"))}</button><small>${h(t("Авто подбирает контрастный текст кнопок. Выберите цвет, чтобы задать его вручную."))}</small></div><details><summary>${h(t("Дополнительные цвета"))}${icon("chevron-down")}</summary><div class="theme-color-grid">${Object.keys(themeNames).filter(key=>!["accent","background","text"].includes(key)).map(key=>colorControl(theme,key)).join("")}</div></details></section>`).join("")}</div><p class="help" role="status" id="theme-contrast-status"></p></div>`;
+    form.prepend(themePanel);
+    const previewThemes = () => {
+      for (const theme of ["light","dark"]) {
+        window.WVWThemes.apply($(`[data-theme-preview="${theme}"]`,form),{theme_colors:themeDraft},theme);
+        const automatic=!themeDraft[theme].button_text;
+        $(`[data-auto-button-text="${theme}"]`,form).setAttribute("aria-pressed",String(automatic));
+        const ink=$(`[data-theme-color="${theme}"][data-color-key="button_text"]`,form);
+        if(automatic) ink.value=window.WVWThemes.buttonColors(themeDraft[theme]).foreground;
+      }
+      $$("[data-theme-color]",form).forEach(input=>{ $(`[data-color-value="${input.dataset.themeColor}:${input.dataset.colorKey}"]`,form).textContent=input.value.toUpperCase(); });
+      const errors=window.WVWThemes.validate(themeDraft);
+      $("#theme-contrast-status").textContent=errors.some(item=>item.key==="button_text")?t("Контраст текста кнопки ниже 4.5:1. Измените текст или акцентный цвет."):errors.length?t("Недостаточный контраст текста. Выберите более различимые цвета."):t("Контраст текста соответствует WCAG AA.");
+      $("#theme-contrast-status").classList.toggle("error",!!errors.length);
+    };
+    $$("[data-theme-color]",form).forEach(input=>input.oninput=()=>{ themeDraft[input.dataset.themeColor][input.dataset.colorKey]=input.value; previewThemes(); });
+    $$("[data-auto-button-text]",form).forEach(button=>button.onclick=()=>{ markDirty(); delete themeDraft[button.dataset.autoButtonText].button_text; previewThemes(); });
+    $$("[data-reset-theme]",form).forEach(button=>button.onclick=()=>{ markDirty(); const theme=button.dataset.resetTheme; themeDraft[theme]={...window.WVWThemes.defaults[theme]}; $$(`[data-theme-color="${theme}"]`,form).forEach(input=>{ if(input.dataset.colorKey!=="button_text")input.value=themeDraft[theme][input.dataset.colorKey]; }); previewThemes(); });
+    previewThemes();
     function renderAssets() {
       $("#logo-preview").innerHTML = logo
         ? `<img src="${h(logo)}" alt="">`
-        : window.VWSIcons.html(logoIcon || "brand");
+        : logoIcon ? window.VWSIcons.html(logoIcon) : '<img src="/static/brand/logo.png" alt="WVW">';
       $("#favicon-preview").innerHTML = favicon
         ? `<img src="${h(favicon)}" alt="">`
         : faviconIcon
           ? window.VWSIcons.html(faviconIcon)
-          : "V";
+          : '<img src="/static/brand/favicon.png" alt="WVW">';
     }
     let target = "logo",
-      assetBusy = 0;
+      assetBusy = 0,
+      saveBusy = false;
     const assetVersion = { logo: 0, favicon: 0 };
     const syncAssetBusy = () => {
       if (form.isConnected)
         $$('[form="brand-form"][type="submit"]').forEach(
-          (button) => (button.disabled = assetBusy > 0),
+          (button) => (button.disabled = assetBusy > 0 || saveBusy),
         );
     };
     for (const kind of ["logo", "favicon"]) {
@@ -1391,6 +1409,7 @@
         $("#branding-file").click();
       };
       $("#" + kind + "-clear").onclick = () => {
+        markDirty();
         assetVersion[kind]++;
         if (kind === "logo") {
           logo = "";
@@ -1413,6 +1432,7 @@
           (kind === "logo" ? logoIcon : faviconIcon) || "shield-check",
           H,
           (name) => {
+            markDirty();
             assetVersion[kind]++;
             if (kind === "logo") {
               logo = "";
@@ -1432,6 +1452,7 @@
       const file = e.target.files[0],
         kind = target;
       if (!file) return;
+      markDirty();
       const version = ++assetVersion[kind];
       assetBusy++;
       syncAssetBusy();
@@ -1454,47 +1475,12 @@
         syncAssetBusy();
       }
     };
-    const previewColors = () => {
-      const preview = $(".brand-style-preview");
-      preview.style.setProperty("--accent", form.elements.accent.value);
-      preview.style.setProperty("--icon-color", form.elements.icon_color.value);
-      for (const name of ["accent", "icon_color"]) {
-        $("[data-color-value=" + name + "]").textContent =
-          form.elements[name].value.toUpperCase();
-        $$(`[data-palette="${name}"]`).forEach((el) =>
-          el.setAttribute(
-            "aria-pressed",
-            String(
-              el.dataset.color.toLowerCase() ===
-                form.elements[name].value.toLowerCase(),
-            ),
-          ),
-        );
-      }
-    };
-    for (const name of ["accent", "icon_color"])
-      form.elements[name].oninput = previewColors;
-    $$("[data-palette]").forEach(
-      (el) =>
-        (el.onclick = () => {
-          form.elements[el.dataset.palette].value = el.dataset.color;
-          previewColors();
-        }),
-    );
-    $$("[data-color-default]").forEach(
-      (el) =>
-        (el.onclick = () => {
-          form.elements[el.dataset.colorDefault].value =
-            defaults[el.dataset.colorDefault];
-          previewColors();
-        }),
-    );
     form.elements.wall_gap.oninput = (e) =>
       ($(".brand-range output").textContent = e.target.value + " px");
     renderAssets();
-    previewColors();
     form.onsubmit = async (e) => {
       e.preventDefault();
+      if (saveBusy) return;
       if (assetBusy) {
         toast(
           L(
@@ -1504,18 +1490,19 @@
         );
         return;
       }
+      if (window.WVWThemes.validate(themeDraft).length) { toast("Недостаточный контраст текста. Выберите более различимые цвета.","error"); return; }
       const f = new FormData(form);
+      const submittedVersion = draftVersion;
+      saveBusy = true;
+      syncAssetBusy();
       try {
         const result = await api("/api/branding", {
           method: "POST",
           body: {
             name: f.get("name"),
             subtitle: f.get("subtitle"),
-            accent: f.get("accent"),
-            icon_color: f.get("icon_color"),
             motion: form.elements.motion.checked,
-            density: f.get("density"),
-            corners: f.get("corners"),
+            theme_colors: themeDraft,
             wall_gap: Number(f.get("wall_gap")),
             show_clock: form.elements.show_clock.checked,
             logo,
@@ -1525,10 +1512,14 @@
           },
         });
         state.branding = result.branding;
+        if (draftVersion === submittedVersion) delete form.dataset.dirty;
         applyBrand();
         toast("Оформление сохранено");
       } catch (error) {
         toast(error.message, "error");
+      } finally {
+        saveBusy = false;
+        syncAssetBusy();
       }
     };
   }
@@ -1543,16 +1534,18 @@
       r = s.resources || {},
       m = data.metrics || {},
       fmt = (v) =>
-        v === null || v === undefined ? "—" : Number(v).toFixed(1) + "%",
-      gb = (n) => (Number(n || 0) / 1073741824).toFixed(1) + " GB";
+        v === null || v === undefined ? "—" : window.WVWI18n.number(Number(v)/100,state.language,{style:"percent",minimumFractionDigits:1,maximumFractionDigits:1}),
+      gb = (n) => window.WVWI18n.number(Number(n || 0)/1073741824,state.language,{style:"unit",unit:"gigabyte",minimumFractionDigits:1,maximumFractionDigits:1}),
+      unit = (value,name) => window.WVWI18n.number(value,state.language,{style:"unit",unit:name,unitDisplay:"short",maximumFractionDigits:1});
     $("#main-content").innerHTML = page(
       "Сервер и ресурсы",
       "Настройте нагрузку, форматы и общие параметры сервера.",
       button("settings-refresh", "Обновить", "refresh") +
         `<button type="submit" form="settings-form" class="btn btn-primary">${icon("check")}${t("Применить настройки")}</button>`,
-      `<div class="metric-grid"><div class="metric"><span>${t("Процессор")}</span><strong>${fmt(m.cpu_percent)}</strong><div class="meter"><i style="width:${Number(m.cpu_percent) || 0}%"></i></div></div><div class="metric"><span>${t("Оперативная память")}</span><strong>${fmt(m.memory_percent)}</strong><div class="meter"><i style="width:${Number(m.memory_percent) || 0}%"></i></div></div><div class="metric"><span>${t("Свободно на диске")}</span><strong>${gb(m.disk?.free)}</strong><span>${gb(m.disk?.total)}</span></div></div><div class="settings-grid"><form id="settings-form" class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Общие параметры")}</h2></div><div class="panel-body form-grid">${formField("Часовой пояс", input("timezone", s.timezone, 'required list="timezones"') + '<datalist id="timezones"><option>Asia/Omsk</option><option>Europe/Moscow</option><option>UTC</option><option>Europe/Berlin</option></datalist>')}${formField("Язык по умолчанию", `<select class="select" name="language"><option value="ru" ${s.language === "ru" ? "selected" : ""}>Русский</option><option value="en" ${s.language === "en" ? "selected" : ""}>English</option></select>`)}${formField("Формат снимков", `<select class="select" name="snapshot_format">${["jpeg", "png", "webp"].map((x) => `<option value="${x}" ${s.snapshot_format === x ? "selected" : ""}>${x.toUpperCase()}</option>`).join("")}</select>`)}${formField("Формат архива", '<select class="select" name="archive_format"><option value="mp4">MP4</option></select>', "Сохранять видео в MP4 без лишнего перекодирования.")}</div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Профиль ресурсов")}</h2></div><div class="panel-body form-stack">${formField(
+      `<div class="metric-grid"><div class="metric"><span>${t("Процессор")}</span><strong>${fmt(m.cpu_percent)}</strong><div class="meter"><i style="width:${Number(m.cpu_percent) || 0}%"></i></div></div><div class="metric"><span>${t("Оперативная память")}</span><strong>${fmt(m.memory_percent)}</strong><div class="meter"><i style="width:${Number(m.memory_percent) || 0}%"></i></div></div><div class="metric"><span>${t("Свободно на диске")}</span><strong>${gb(m.disk?.free)}</strong><span>${gb(m.disk?.total)}</span></div></div><div class="settings-grid"><form id="settings-form" class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Общие параметры")}</h2></div><div class="panel-body form-grid">${formField("Часовой пояс", '<input type="search" id="timezone-search" class="field" placeholder="Поиск IANA" aria-label="Поиск часового пояса"><select name="timezone" class="select" required>' + (data.timezones || [s.timezone]).map((zone) => `<option value="${h(zone)}" ${zone === s.timezone ? "selected" : ""}>${h(zone.replaceAll("_", " "))}</option>`).join("") + "</select>")}${formField("Язык по умолчанию", `<select class="select" name="language">${window.WVWI18n.options(s.language)}</select>`)}${formField("Формат снимков", `<select class="select" name="snapshot_format">${["jpeg", "png", "webp"].map((x) => `<option value="${x}" ${s.snapshot_format === x ? "selected" : ""}>${x.toUpperCase()}</option>`).join("")}</select>`)}${formField("Формат архива", `<select class="select" name="archive_format">${[["mp4","MP4 — без перекодирования"],["avi","AVI — MPEG-4, широкая совместимость"],["original","Исходный H.264/H.265 — без контейнера"]].map(([value,label])=>`<option value="${value}" ${s.archive_format===value?"selected":""}>${h(t(label))}</option>`).join("")}</select>`, "AVI требует перекодирования. Исходный поток доступен только после подтверждения кодека. Формат H265X не поддерживается.")}</div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Профиль ресурсов")}</h2></div><div class="panel-body form-stack">${formField(
         "Профиль ресурсов",
         `<select class="select" name="resource_profile">${[
+          ["minimal", "Минимальный"],
           ["standard", "Стандартный"],
           ["maximum", "Максимальный"],
           ["custom", "Свой"],
@@ -1581,24 +1574,53 @@
         )
         .join(
           "",
-        )}</div><label class="check-item"><input type="checkbox" name="hardware_diagnostics" ${s.diagnostics?.enabled !== false ? "checked" : ""}><span>${t("Диагностика оборудования")}<small>${t("Локальные журналы подключений и ошибок без паролей. Ротация до 8 МБ.")}</small></span></label></div><div class="modal-foot"><span></span><button type="submit" class="btn btn-primary">${icon("check")}${t("Применить настройки")}</button></div></div></form><div class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Информация о сервере")}</h2>${icon("server")}</div><div class="panel-body"><dl class="kv"><div><dt>${t("Версия")}</dt><dd>VWSHub 0.8.5</dd></div><div><dt>${t("Разработчик")}</dt><dd>sedukindv</dd></div><div><dt>GitHub</dt><dd><a href="https://github.com/sedukindv/VWSHub" target="_blank" rel="noopener">sedukindv/VWSHub ↗</a></dd></div><div><dt>${t("Время работы")}</dt><dd>${Math.floor(Number(m.uptime_seconds || 0) / 3600)}h ${Math.floor((Number(m.uptime_seconds || 0) % 3600) / 60)}m</dd></div><div><dt>RAM / process</dt><dd>${m.process_memory_mb ?? "—"} MB</dd></div></dl></div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Обслуживание сервера")}</h2></div><div class="panel-body form-stack"><p class="help">${t("Backup содержит учётные записи, зашифрованные пароли устройств и ключи. Храните его в защищённом месте.")}</p>${button("server-backup", "Скачать backup", "download")}${button("server-restore", "Восстановить backup", "upload")}${data.capabilities?.restart ? button("server-restart", "Перезапустить сервер", "refresh") : ""}</div></div></div></div>`,
+        )}</div><label class="check-item"><input type="checkbox" name="hardware_diagnostics" ${s.diagnostics?.enabled !== false ? "checked" : ""}><span>${t("Диагностика оборудования")}<small>${t("Локальные журналы подключений и ошибок без паролей. Ротация до 8 МБ.")}</small></span></label></div><div class="modal-foot"><span></span><button type="submit" class="btn btn-primary">${icon("check")}${t("Применить настройки")}</button></div></div></form><div class="form-stack"><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Информация о сервере")}</h2>${icon("server")}</div><div class="panel-body"><dl class="kv"><div><dt>${t("Версия")}</dt><dd>WVW 0.9.0</dd></div><div><dt>${t("Разработчик")}</dt><dd>sedukindv</dd></div><div><dt>GitHub</dt><dd><a href="https://github.com/sedukindv/WVW" target="_blank" rel="noopener">sedukindv/WVW ↗</a></dd></div><div><dt>${t("Время работы")}</dt><dd>${h(unit(Math.floor(Number(m.uptime_seconds || 0) / 3600),"hour"))} ${h(unit(Math.floor((Number(m.uptime_seconds || 0) % 3600) / 60),"minute"))}</dd></div><div><dt>RAM / process</dt><dd>${m.process_memory_mb == null ? "—" : h(unit(m.process_memory_mb,"megabyte"))}</dd></div></dl></div></div><div class="panel"><div class="panel-head"><h2 class="panel-title">${t("Обслуживание сервера")}</h2></div><div class="panel-body form-stack"><p class="help">${t("Backup содержит учётные записи, зашифрованные пароли устройств и ключи. Храните его в защищённом месте.")}</p>${button("server-backup", "Скачать backup", "download")}${button("server-restore", "Восстановить backup", "upload")}${data.capabilities?.restart ? button("server-restart", "Перезапустить сервер", "refresh") : ""}</div></div></div></div>`,
     );
     $("#settings-refresh").onclick = () =>
       renderSettings().catch((e) => toast(e.message, "error"));
     const form = $("#settings-form"),
       sync = () => {
         const profile = $("[name=resource_profile]", form).value,
-          preset = {
-            standard: [16, 4, 16, 180, 2],
-            maximum: [64, 12, 64, 300, 0],
-          }[profile];
+          preset = data.resource_profiles?.[profile];
         $$("input", $("#resource-fields")).forEach((n, i) => {
-          n.disabled = profile !== "custom";
-          if (preset) n.value = preset[i];
+          n.disabled = false;
+          if (preset) n.value = preset[n.name];
         });
       };
+    const markDirty = () => { form.dataset.dirty = "true"; };
+    form.addEventListener("input", markDirty);
+    form.addEventListener("change", markDirty);
+    $("#timezone-search").oninput = (event) => {
+      const query = event.target.value.trim().toLowerCase();
+      $$("option", $("[name=timezone]", form)).forEach((option) => {
+        option.hidden = !option.selected && !option.textContent.toLowerCase().includes(query);
+      });
+    };
     $("[name=resource_profile]", form).onchange = sync;
-    sync();
+    const hevcPanel = document.createElement("section");
+    hevcPanel.className = "panel";
+    hevcPanel.innerHTML = `<div class="panel-head"><h2 class="panel-title">${icon("video")}${t("Поддержка HEVC (H.265)")}</h2></div><div class="panel-body form-stack"><label class="check-item"><input type="checkbox" name="hevc_support" ${s.hevc_support ? "checked" : ""}><span>${t("Поддержка HEVC (H.265)")}<small>${t("Обеспечивает воспроизведение камер с кодеком H.265 (HEVC) в браузерах, которые не поддерживают его напрямую. Требует HTTPS. Дополнительная обработка видеопотока может увеличить нагрузку на компьютер пользователя.")}</small></span></label><p class="help" id="hevc-status" role="status"></p></div>`;
+    form.insertBefore(hevcPanel,form.lastElementChild);
+    const hevcToggle = $("[name=hevc_support]", form);
+    const updateHevcStatus = () => {
+      const status = $("#hevc-status", form);
+      if (!status?.isConnected) return;
+      const secure=window.isSecureContext && location.protocol==="https:";
+      const adapter=window.WVWHevc?.status(hevcToggle.checked);
+      let message = {off:"HEVC выключен",httpsrequired:"Для HEVC требуется HTTPS",apiunsupported:"Браузер не поддерживает необходимые функции HEVC-плагина",ready:"HEVC-плагин готов",initerror:"Ошибка инициализации HEVC-плагина",enabled:"HEVC включён"}[adapter?.state] || (!hevcToggle.checked ? "HEVC выключен" : !secure ? "Для HEVC требуется HTTPS" : "HEVC включён");
+      if (!adapter && hevcToggle.checked && secure && !["WebAssembly","Worker","MediaSource","VideoEncoder","VideoFrame","EncodedVideoChunk"].every(key => typeof window[key] !== "undefined")) message = "Браузер не поддерживает необходимые функции HEVC-плагина";
+      status.textContent = t(message);
+    };
+    hevcToggle.onchange = () => {
+      if (!hevcToggle.checked) { updateHevcStatus(); return; }
+      hevcToggle.checked = false;
+      modal("Включение поддержки HEVC (H.265)","Для работы функции необходимо защищённое HTTPS-соединение.",`<div class="form-stack"><p>${h(t("Для обработки HEVC браузер может использовать программное декодирование и преобразование видеопотока. Это увеличивает потребление процессора и оперативной памяти компьютера, на котором открыт WVW. При просмотре нескольких HEVC-камер одновременно возможны снижение плавности и задержки воспроизведения."))}</p><p>${h(t("Установка дополнительных кодеков или программ на компьютеры сотрудников не требуется. Необходимо использовать современный браузер с поддержкой нужных веб-технологий."))}</p></div>`,`<button type="button" class="btn" data-close>${t("Отмена")}</button><button type="button" class="btn btn-primary" id="hevc-enable-confirm">${t("Включить")}</button>`);
+      $("#hevc-enable-confirm").onclick = () => { hevcToggle.checked = true; closeModal(); updateHevcStatus(); };
+    };
+    updateHevcStatus();
+    $$("input", $("#resource-fields")).forEach((n) => {
+      n.oninput = () => { $("[name=resource_profile]", form).value = "custom"; };
+    });
     form.onsubmit = async (e) => {
       e.preventDefault();
       const f = new FormData(form),
@@ -1619,6 +1641,7 @@
             language: f.get("language"),
             snapshot_format: f.get("snapshot_format"),
             archive_format: f.get("archive_format"),
+            hevc_support: hevcToggle.checked,
             resources,
             diagnostics: {
               enabled: $("[name=hardware_diagnostics]", form).checked,
@@ -1667,7 +1690,7 @@
     modal(
       "Мой профиль",
       "Изображение и псевдоним отображаются вместо логина.",
-      `<form id="profile-form" class="form-stack"><div class="upload-preview"><span id="profile-image">${avatar(u)}</span><div class="form-stack">${button("profile-image-add", "Выбрать изображение", "upload")}${button("profile-image-remove", "Удалить изображение", "close")}</div><input class="file-hidden" id="profile-image-file" type="file" accept="image/png,image/jpeg,image/webp"></div><div class="form-grid">${formField("Логин", input("login", u.username, "disabled"))}${formField("Псевдоним", input("alias", u.alias || u.username, 'maxlength="100"'))}${formField("Язык", `<select class="select" name="language"><option value="ru" ${state.language === "ru" ? "selected" : ""}>Русский</option><option value="en" ${state.language === "en" ? "selected" : ""}>English</option></select>`)}${formField(
+      `<form id="profile-form" class="form-stack"><div class="upload-preview"><span id="profile-image">${avatar(u)}</span><div class="form-stack">${button("profile-image-add", "Выбрать изображение", "upload")}${button("profile-image-remove", "Удалить изображение", "close")}</div><input class="file-hidden" id="profile-image-file" type="file" accept="image/png,image/jpeg,image/webp"></div><div class="form-grid">${formField("Логин", input("login", u.username, "disabled"))}${formField("Псевдоним", input("alias", u.alias || u.username, 'maxlength="100"'))}${formField("Язык", `<select class="select" name="language">${window.WVWI18n.options(state.language)}</select>`)}${formField(
         "Тема",
         `<select class="select" name="theme">${[
           ["auto", "Автоматическая"],
@@ -1679,30 +1702,50 @@
               `<option value="${value}" ${u.theme === value ? "selected" : ""}>${t(title)}</option>`,
           )
           .join("")}</select>`,
-      )}${formField("Текущий пароль", input("current_password", "", 'type="password" autocomplete="current-password"'))}${formField("Новый пароль профиля", input("password", "", 'type="password" autocomplete="new-password" minlength="10"'))}</div></form>`,
+      )}${formField("Часовой пояс пользователя", input("timezone", u.timezone || "", `placeholder="${h(t('Наследовать часовой пояс сервера'))}" list="profile-timezones"`)+'<datalist id="profile-timezones">'+(state.settings?.timezones || [state.public_settings.timezone,"UTC"]).map(zone=>`<option value="${h(zone)}"></option>`).join("")+"</datalist>")}${formField("Текущий пароль", input("current_password", "", 'type="password" autocomplete="current-password"'))}${formField("Новый пароль профиля", input("password", "", 'type="password" autocomplete="new-password" minlength="10"'))}</div></form>`,
       `<span class="modal-note">${t(u.role === "admin" ? "Администратор" : "Пользователь")}</span><button type="submit" form="profile-form" class="btn btn-primary">${icon("check")}${t("Сохранить")}</button>`,
     );
+    api("/api/timezones").then(data=>{ const list=$("#profile-timezones"); if(list)list.innerHTML=(data.timezones || []).map(zone=>`<option value="${h(zone)}"></option>`).join(""); }).catch(error=>toast(error.message,"error"));
+    const profileForm = $("#profile-form");
+    let imageBusy = 0, imageVersion = 0;
+    const syncImageBusy = () => {
+      if (profileForm.isConnected) $$('button[form="profile-form"][type="submit"]').forEach(button => { button.disabled = imageBusy > 0; });
+    };
     $("#profile-image-add").onclick = () => $("#profile-image-file").click();
     $("#profile-image-remove").onclick = () => {
+      ++imageVersion;
       image = "";
       $("#profile-image").innerHTML = avatar({ ...u, avatar: "" });
     };
     $("#profile-image-file").onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const version = ++imageVersion;
+      ++imageBusy;
+      syncImageBusy();
       try {
-        image = await readImage(e.target.files[0], 128);
+        const nextImage = await readImage(file, 128);
+        if (!profileForm.isConnected || version !== imageVersion) return;
+        image = nextImage;
         $("#profile-image").innerHTML = avatar({ ...u, avatar: image });
       } catch (err) {
-        toast(err.message, "error");
+        if (profileForm.isConnected && version === imageVersion) toast(err.message, "error");
+      } finally {
+        --imageBusy;
+        e.target.value = "";
+        syncImageBusy();
       }
     };
     $("#profile-form").onsubmit = async (e) => {
       e.preventDefault();
+      if (imageBusy) { toast("Дождитесь загрузки изображения"); return; }
       const f = Object.fromEntries(new FormData(e.target));
       f.avatar = image;
       try {
         const result = await api("/api/profile", { method: "POST", body: f });
         state.user = result.user;
         state.language = result.user.language;
+        await window.WVWI18n.load(state.language).catch(() => {});
         try {
           localStorage.setItem("vwshub.language", state.language);
         } catch (_) {}
@@ -1811,6 +1854,7 @@
     }
   });
   async function init() {
+    await window.WVWI18n.load(state.language).catch(() => {});
     try {
       if (localStorage.getItem("vwshub.sidebar") === "collapsed")
         document.body.classList.add("is-collapsed");
@@ -1822,6 +1866,7 @@
       const current = await api("/api/bootstrap");
       Object.assign(state, current);
       state.language = state.user.language || state.public_settings.language;
+      await window.WVWI18n.load(state.language).catch(() => {});
       window.VWSHUB_BOOTSTRAP = current;
       await loadData();
       renderShell();
@@ -1836,5 +1881,6 @@
       toast(e.message, "error");
     }
   }
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if ((state.user.theme || "auto") === "auto") applyBrand(); });
   init();
 })();

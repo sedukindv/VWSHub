@@ -74,7 +74,7 @@ body[data-view="live"] .main-content {
   width: 13px;
 }
 .wall-layouts button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--accent-dim);
 }
 .wall-body {
@@ -184,7 +184,7 @@ body[data-view="live"] .main-content {
   opacity: 1;
 }
 .wall-tree-collection:hover > span {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .wall-tree-list summary .lucide,
 .wall-tree-camera .lucide {
@@ -273,7 +273,7 @@ body[data-view="live"] .main-content {
 .wall-tree-camera svg {
   width: 12px;
   height: 12px;
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .wall-tree-camera span {
   font-size: 10px;
@@ -336,7 +336,7 @@ body[data-view="live"] .main-content {
   width: 25px;
 }
 .wall-monitor-head .active {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--accent-dim);
 }
 .wall-grid {
@@ -415,7 +415,7 @@ body[data-view="live"] .main-content {
   color: var(--text-soft);
   border: 1px solid var(--line-strong);
   border-radius: 3px;
-  background: var(--surface);
+  background-color: var(--surface);
   padding: 0 2px;
   width: 40px;
 }
@@ -425,10 +425,10 @@ body[data-view="live"] .main-content {
   color: var(--muted);
 }
 .wall-stream-status[data-state="playing"] {
-  color: var(--success);
+  color: var(--success-text, var(--success));
 }
 .wall-stream-status[data-state="error"] {
-  color: var(--danger);
+  color: var(--danger-text, var(--danger));
 }
 .wall-video {
   flex: 1;
@@ -526,7 +526,7 @@ body[data-view="live"] .main-content {
   font-size: 9px;
 }
 .wall-empty:hover {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   border-color: var(--accent);
 }
 .wall-grid > .drop-target {
@@ -553,7 +553,7 @@ body[data-view="live"] .main-content {
 #wall-selected svg {
   width: 14px;
   height: 14px;
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 #wall-selected strong {
   font-size: 10px;
@@ -770,9 +770,6 @@ body[data-view="live"] .main-content {
   .wall-layouts button {
     min-width: 28px;
   }
-  .wall-layouts button svg {
-    display: none;
-  }
   .wall-body,
   .wall-body.with-inspector {
     grid-template-columns: 1fr;
@@ -898,7 +895,7 @@ body[data-view="live"] .main-content {
 }
 .wall-tree-recorder:hover > svg {
   opacity: 1;
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .wall-video.is-zoomed {
   cursor: grab;
@@ -945,7 +942,7 @@ body[data-view="live"] .main-content {
   font-size: 9px;
 }
 .wall-layouts button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--surface);
   box-shadow: 0 1px 4px #0002;
 }
@@ -1012,7 +1009,7 @@ body[data-view="live"] .main-content {
 .wall-layouts > button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .wall-layout-diagram {
   width: 22px;
@@ -1057,7 +1054,14 @@ body[data-view="live"] .main-content {
 }
 .wall-tile-actions select {
   width: 55px;
-  padding-right: 21px;
-  background-position: right 5px center;
+  min-width: 55px;
+  padding-inline: 5px 23px;
+  background-image: var(--select-arrow);
+  background-position: right 8px center;
   background-size: 12px;
+}
+
+html[dir=rtl] .wall-tile-actions select {
+  padding-inline:5px 23px;
+  background-position:left 8px center;
 }

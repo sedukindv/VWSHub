@@ -1,0 +1,898 @@
+{
+  "ru": {
+    "camera": {
+      "one": "{count} камера",
+      "few": "{count} камеры",
+      "many": "{count} камер",
+      "other": "{count} камеры"
+    },
+    "channel": {
+      "one": "{count} канал",
+      "few": "{count} канала",
+      "many": "{count} каналов",
+      "other": "{count} канала"
+    },
+    "fragment": {
+      "one": "{count} отрезок",
+      "few": "{count} отрезка",
+      "many": "{count} отрезков",
+      "other": "{count} отрезка"
+    },
+    "window": {
+      "one": "{count} окно",
+      "few": "{count} окна",
+      "many": "{count} окон",
+      "other": "{count} окна"
+    },
+    "space": {
+      "one": "{count} пространство",
+      "few": "{count} пространства",
+      "many": "{count} пространств",
+      "other": "{count} пространства"
+    },
+    "zone": {
+      "one": "{count} зона",
+      "few": "{count} зоны",
+      "many": "{count} зон",
+      "other": "{count} зоны"
+    },
+    "device": {
+      "one": "{count} устройство",
+      "few": "{count} устройства",
+      "many": "{count} устройств",
+      "other": "{count} устройства"
+    }
+  },
+  "en": {
+    "camera": {
+      "other": "{count} cameras",
+      "one": "{count} camera"
+    },
+    "channel": {
+      "other": "{count} channels",
+      "one": "{count} channel"
+    },
+    "fragment": {
+      "other": "{count} recording intervals",
+      "one": "{count} recording interval"
+    },
+    "window": {
+      "other": "{count} windows",
+      "one": "{count} window"
+    },
+    "space": {
+      "other": "{count} spaces",
+      "one": "{count} space"
+    },
+    "zone": {
+      "other": "{count} zones",
+      "one": "{count} zone"
+    },
+    "device": {
+      "other": "{count} devices",
+      "one": "{count} device"
+    }
+  },
+  "ar": {
+    "camera": {
+      "zero": "{count} كاميرات",
+      "one": "{count} كاميرا",
+      "two": "{count} كاميرات",
+      "few": "{count} كاميرات",
+      "many": "{count} كاميرا",
+      "other": "{count} كاميرا"
+    },
+    "channel": {
+      "zero": "{count} قنوات",
+      "one": "{count} قناة",
+      "two": "{count} قنوات",
+      "few": "{count} قنوات",
+      "many": "{count} قناة",
+      "other": "{count} قناة"
+    },
+    "fragment": {
+      "zero": "{count} فترات التسجيل",
+      "one": "{count} الفاصل الزمني للتسجيل",
+      "two": "{count} فترات التسجيل",
+      "few": "{count} فترات التسجيل",
+      "many": "{count} فترات التسجيل",
+      "other": "{count} فترات التسجيل"
+    },
+    "window": {
+      "zero": "{count} نوافذ",
+      "one": "{count} نافذة",
+      "two": "{count} نوافذ",
+      "few": "{count} نوافذ",
+      "many": "{count} نافذة",
+      "other": "{count} نافذة"
+    },
+    "space": {
+      "zero": "{count} مساحات",
+      "one": "{count} مساحة",
+      "two": "{count} مسافات",
+      "few": "{count} مساحات",
+      "many": "{count} مساحة",
+      "other": "{count} مساحة"
+    },
+    "zone": {
+      "zero": "{count} مناطق",
+      "one": "{count} منطقة",
+      "two": "{count} مناطق",
+      "few": "{count} مناطق",
+      "many": "{count} منطقة",
+      "other": "{count} منطقة"
+    },
+    "device": {
+      "zero": "{count} أجهزة",
+      "one": "{count} جهاز",
+      "two": "{count} جهاز",
+      "few": "{count} أجهزة",
+      "many": "{count} جهاز",
+      "other": "{count} جهاز"
+    }
+  },
+  "be": {
+    "camera": {
+      "many": "{count} камер",
+      "one": "{count} камера",
+      "few": "{count} камеры",
+      "other": "Камеры {count}"
+    },
+    "channel": {
+      "many": "{count} каналаў",
+      "one": "{count} канал",
+      "few": "{count} канала",
+      "other": "{count} каналы"
+    },
+    "fragment": {
+      "many": "{count} інтэрвалаў запісу",
+      "one": "{count} інтэрвал запісу",
+      "few": "{count} інтэрвалы запісу",
+      "other": "{count} інтэрвалы запісу"
+    },
+    "window": {
+      "many": "{count} вокнаў",
+      "one": "{count} акно",
+      "few": "{count} акна",
+      "other": "{count} вокны"
+    },
+    "space": {
+      "many": "{count} прабелаў",
+      "one": "{count} прабел",
+      "few": "{count} прабелы",
+      "other": "{count} прабелы"
+    },
+    "zone": {
+      "many": "{count} зон",
+      "one": "{count} зона",
+      "few": "{count} зоны",
+      "other": "{count} зоны"
+    },
+    "device": {
+      "many": "{count} прылад",
+      "one": "{count} прылада",
+      "few": "{count} прылады",
+      "other": "{count} прылады"
+    }
+  },
+  "bn": {
+    "camera": {
+      "one": "{count} ক্যামেরা",
+      "other": "{count} ক্যামেরা"
+    },
+    "channel": {
+      "one": "{count} চ্যানেল",
+      "other": "{count}টি চ্যানেল"
+    },
+    "fragment": {
+      "one": "{count} রেকর্ডিং অন্তর",
+      "other": "{count} রেকর্ডিং অন্তর"
+    },
+    "window": {
+      "one": "{count} উইন্ডো",
+      "other": "{count}টি জানালা"
+    },
+    "space": {
+      "one": "শূন্যস্থান",
+      "other": "{count} স্পেস"
+    },
+    "zone": {
+      "one": "{count} জোন",
+      "other": "{count} জোন"
+    },
+    "device": {
+      "one": "{count}টি ডিভাইস",
+      "other": "{count}টি ডিভাইস"
+    }
+  },
+  "cs": {
+    "camera": {
+      "other": "{count} kamer",
+      "one": "{count} fotoaparát",
+      "few": "{count} kamery",
+      "many": "{count} kamery"
+    },
+    "channel": {
+      "other": "{count} kanálů",
+      "one": "{count} kanál",
+      "few": "{count} kanály",
+      "many": "{count} kanálů"
+    },
+    "fragment": {
+      "other": "{count} intervalů záznamu",
+      "one": "{count} interval záznamu",
+      "few": "{count} intervaly záznamu",
+      "many": "{count} intervaly záznamu"
+    },
+    "window": {
+      "other": "{count} oken",
+      "one": "{count} okno",
+      "few": "{count} okna",
+      "many": "Windows {count}"
+    },
+    "space": {
+      "other": "{count} mezer",
+      "one": "{count} mezera",
+      "few": "{count} mezery",
+      "many": "{count} mezery"
+    },
+    "zone": {
+      "other": "{count} zón",
+      "one": "{count} zóna",
+      "few": "{count} zóny",
+      "many": "{count} zóny"
+    },
+    "device": {
+      "other": "{count} zařízení",
+      "one": "{count} zařízení",
+      "few": "{count} zařízení",
+      "many": "zařízení {count}"
+    }
+  },
+  "da": {
+    "camera": {
+      "other": "{count} kameraer",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} kanaler",
+      "one": "{count} kanal"
+    },
+    "fragment": {
+      "other": "{count} optageintervaller",
+      "one": "{count} optagelsesinterval"
+    },
+    "window": {
+      "other": "{count} vinduer",
+      "one": "{count} vindue"
+    },
+    "space": {
+      "other": "{count} mellemrum",
+      "one": "{count} plads"
+    },
+    "zone": {
+      "other": "{count} zoner",
+      "one": "{count} zone"
+    },
+    "device": {
+      "other": "{count} enheder",
+      "one": "{count} enhed"
+    }
+  },
+  "nl": {
+    "camera": {
+      "other": "{count} camera's",
+      "one": "{count} camera"
+    },
+    "channel": {
+      "other": "{count} kanalen",
+      "one": "{count} kanaal"
+    },
+    "fragment": {
+      "other": "{count} opname-intervallen",
+      "one": "{count} opname-interval"
+    },
+    "window": {
+      "other": "{count} ramen",
+      "one": "{count} raam"
+    },
+    "space": {
+      "other": "{count} spaties",
+      "one": "{count} spatie"
+    },
+    "zone": {
+      "other": "{count} zones",
+      "one": "{count} zone"
+    },
+    "device": {
+      "other": "{count} apparaten",
+      "one": "{count} apparaat"
+    }
+  },
+  "fa": {
+    "camera": {
+      "one": "{count} دوربین",
+      "other": "{count} دوربین"
+    },
+    "channel": {
+      "one": "{count} کانال",
+      "other": "{count} کانال"
+    },
+    "fragment": {
+      "one": "{count} فواصل ضبط",
+      "other": "{count} بازه ضبط"
+    },
+    "window": {
+      "one": "{count} ویندوز",
+      "other": "{count} تا پنجره"
+    },
+    "space": {
+      "one": "{count} فاصله",
+      "other": "{count} فضا"
+    },
+    "zone": {
+      "one": "{count} منطقه",
+      "other": "{count} منطقه"
+    },
+    "device": {
+      "one": "{count} دستگاه",
+      "other": "{count} دستگاه"
+    }
+  },
+  "fi": {
+    "camera": {
+      "other": "{count} kameraa",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} kanavaa",
+      "one": "{count} kanava"
+    },
+    "fragment": {
+      "other": "{count} tallennusväliä",
+      "one": "{count} tallennusväli"
+    },
+    "window": {
+      "other": "{count} ikkunaa",
+      "one": "{count} ikkuna"
+    },
+    "space": {
+      "other": "{count} välilyöntiä",
+      "one": "{count} tila"
+    },
+    "zone": {
+      "other": "{count} vyöhykettä",
+      "one": "{count} vyöhyke"
+    },
+    "device": {
+      "other": "{count} laitetta",
+      "one": "{count} laite"
+    }
+  },
+  "fr": {
+    "camera": {
+      "one": "{count} caméras",
+      "other": "{count} caméras"
+    },
+    "channel": {
+      "one": "{count} chaînes",
+      "other": "{count} canaux"
+    },
+    "fragment": {
+      "one": "{count} intervalle d'enregistrement",
+      "other": "{count} intervalles d'enregistrement"
+    },
+    "window": {
+      "one": "{count} fenêtre",
+      "other": "{count} fenêtres"
+    },
+    "space": {
+      "one": "{count} espace",
+      "other": "{count} espaces"
+    },
+    "zone": {
+      "one": "{count} zone",
+      "other": "{count} zones"
+    },
+    "device": {
+      "one": "{count} appareils",
+      "other": "{count} appareils"
+    }
+  },
+  "de": {
+    "camera": {
+      "other": "{count} Kameras",
+      "one": "{count} Kamera"
+    },
+    "channel": {
+      "other": "{count} Kanäle",
+      "one": "{count} Kanal"
+    },
+    "fragment": {
+      "other": "{count} Aufzeichnungsintervalle",
+      "one": "{count} Aufnahmeintervall"
+    },
+    "window": {
+      "other": "{count} Fenster",
+      "one": "{count} Fenster"
+    },
+    "space": {
+      "other": "{count} Leerzeichen",
+      "one": "{count} Leerzeichen"
+    },
+    "zone": {
+      "other": "{count} Zonen",
+      "one": "{count} Zone"
+    },
+    "device": {
+      "other": "{count} Geräte",
+      "one": "{count} Gerät"
+    }
+  },
+  "hi": {
+    "camera": {
+      "one": "{count} कैमरे",
+      "other": "{count} कैमरे"
+    },
+    "channel": {
+      "one": "{count} चैनल",
+      "other": "{count} चैनल"
+    },
+    "fragment": {
+      "one": "{count} रिकॉर्डिंग अंतराल",
+      "other": "{count} रिकॉर्डिंग अंतराल"
+    },
+    "window": {
+      "one": "{count} खिड़कियाँ",
+      "other": "{count} खिड़कियाँ"
+    },
+    "space": {
+      "one": "{count} रिक्तियाँ",
+      "other": "{count} स्थान"
+    },
+    "zone": {
+      "one": "{count} जोन",
+      "other": "{count} जोन"
+    },
+    "device": {
+      "one": "{count} डिवाइस",
+      "other": "{count} डिवाइस"
+    }
+  },
+  "hu": {
+    "camera": {
+      "other": "{count} kamera",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} csatorna",
+      "one": "{count} csatorna"
+    },
+    "fragment": {
+      "other": "{count} felvételi intervallum",
+      "one": "{count} felvételi intervallum"
+    },
+    "window": {
+      "other": "{count} ablak",
+      "one": "{count} ablak"
+    },
+    "space": {
+      "other": "{count} szóköz",
+      "one": "{count} hely"
+    },
+    "zone": {
+      "other": "{count} zóna",
+      "one": "{count} zóna"
+    },
+    "device": {
+      "other": "{count} eszköz",
+      "one": "{count} készülék"
+    }
+  },
+  "id": {
+    "camera": {
+      "other": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} saluran"
+    },
+    "fragment": {
+      "other": "{count} interval perekaman"
+    },
+    "window": {
+      "other": "{count} jendela"
+    },
+    "space": {
+      "other": "{count} spasi"
+    },
+    "zone": {
+      "other": "{count} zona"
+    },
+    "device": {
+      "other": "{count} perangkat"
+    }
+  },
+  "it": {
+    "camera": {
+      "other": "{count} telecamere",
+      "one": "{count} fotocamera"
+    },
+    "channel": {
+      "other": "{count} canali",
+      "one": "{count} canale"
+    },
+    "fragment": {
+      "other": "{count} intervalli di registrazione",
+      "one": "{count} intervallo di registrazione"
+    },
+    "window": {
+      "other": "{count} finestre",
+      "one": "{count} finestra"
+    },
+    "space": {
+      "other": "{count} spazi",
+      "one": "{count} spazio"
+    },
+    "zone": {
+      "other": "{count} zone",
+      "one": "{count} zona"
+    },
+    "device": {
+      "other": "{count} dispositivi",
+      "one": "{count} dispositivo"
+    }
+  },
+  "ja": {
+    "camera": {
+      "other": "カメラ{count}台"
+    },
+    "channel": {
+      "other": "{count}チャンネル"
+    },
+    "fragment": {
+      "other": "{count} 記録間隔"
+    },
+    "window": {
+      "other": "{count} ウィンドウ"
+    },
+    "space": {
+      "other": "スペース{count}個"
+    },
+    "zone": {
+      "other": "{count}ゾーン"
+    },
+    "device": {
+      "other": "{count} デバイス"
+    }
+  },
+  "ko": {
+    "camera": {
+      "other": "카메라 {count}대"
+    },
+    "channel": {
+      "other": "채널 {count}개"
+    },
+    "fragment": {
+      "other": "{count} 기록 간격"
+    },
+    "window": {
+      "other": "창 {count}개"
+    },
+    "space": {
+      "other": "공백 {count}개"
+    },
+    "zone": {
+      "other": "{count}개 구역"
+    },
+    "device": {
+      "other": "{count}개의 기기"
+    }
+  },
+  "zh-CN": {
+    "camera": {
+      "other": "{count} 台相机"
+    },
+    "channel": {
+      "other": "{count} 个频道"
+    },
+    "fragment": {
+      "other": "{count} 记录间隔"
+    },
+    "window": {
+      "other": "{count} 个窗口"
+    },
+    "space": {
+      "other": "{count} 个空格"
+    },
+    "zone": {
+      "other": "{count} 个区域"
+    },
+    "device": {
+      "other": "{count} 台设备"
+    }
+  },
+  "nb-NO": {
+    "camera": {
+      "other": "{count} kameraer",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} kanaler",
+      "one": "{count} kanal"
+    },
+    "fragment": {
+      "other": "{count} opptaksintervaller",
+      "one": "{count} opptaksintervall"
+    },
+    "window": {
+      "other": "{count} vinduer",
+      "one": "{count} vindu"
+    },
+    "space": {
+      "other": "{count} mellomrom",
+      "one": "{count} plass"
+    },
+    "zone": {
+      "other": "{count} soner",
+      "one": "{count} sone"
+    },
+    "device": {
+      "other": "{count} enheter",
+      "one": "{count} enhet"
+    }
+  },
+  "pl": {
+    "camera": {
+      "many": "{count} kamer",
+      "one": "{count} kamera",
+      "few": "{count} kamery",
+      "other": "Kamery {count}"
+    },
+    "channel": {
+      "many": "{count} kanałów",
+      "one": "{count} kanał",
+      "few": "{count} kanały",
+      "other": "{count} kanałów"
+    },
+    "fragment": {
+      "many": "{count} interwałów zapisu",
+      "one": "{count} interwał zapisu",
+      "few": "{count} interwały zapisu",
+      "other": "{count} interwały zapisu"
+    },
+    "window": {
+      "many": "{count} okien",
+      "one": "{count} okno",
+      "few": "{count} okna",
+      "other": "Okna {count}"
+    },
+    "space": {
+      "many": "{count} spacji",
+      "one": "{count} miejsce",
+      "few": "{count} spacje",
+      "other": "{count} spacji"
+    },
+    "zone": {
+      "many": "{count} stref",
+      "one": "{count} strefa",
+      "few": "{count} strefy",
+      "other": "{count} strefy"
+    },
+    "device": {
+      "many": "{count} urządzeń",
+      "one": "{count} urządzenie",
+      "few": "{count} urządzenia",
+      "other": "Urządzenia {count}"
+    }
+  },
+  "pt-BR": {
+    "camera": {
+      "one": "{count} câmeras",
+      "other": "{count} câmeras"
+    },
+    "channel": {
+      "one": "{count} canais",
+      "other": "{count} canais"
+    },
+    "fragment": {
+      "one": "{count} intervalos de gravação",
+      "other": "{count} intervalos de gravação"
+    },
+    "window": {
+      "one": "{count} janelas",
+      "other": "{count} janelas"
+    },
+    "space": {
+      "one": "{count} espaços",
+      "other": "{count} espaços"
+    },
+    "zone": {
+      "one": "{count} zonas",
+      "other": "{count} zonas"
+    },
+    "device": {
+      "one": "{count} dispositivos",
+      "other": "{count} dispositivos"
+    }
+  },
+  "es": {
+    "camera": {
+      "other": "{count} cámaras",
+      "one": "{count} cámara"
+    },
+    "channel": {
+      "other": "{count} canales",
+      "one": "{count} canal"
+    },
+    "fragment": {
+      "other": "{count} intervalos de grabación",
+      "one": "{count} intervalo de grabación"
+    },
+    "window": {
+      "other": "{count} ventanas",
+      "one": "{count} ventana"
+    },
+    "space": {
+      "other": "{count} espacios",
+      "one": "{count} espacio"
+    },
+    "zone": {
+      "other": "{count} zonas",
+      "one": "{count} zona"
+    },
+    "device": {
+      "other": "{count} dispositivos",
+      "one": "{count} dispositivo"
+    }
+  },
+  "sv": {
+    "camera": {
+      "other": "{count} kameror",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} kanaler",
+      "one": "{count} kanal"
+    },
+    "fragment": {
+      "other": "{count} inspelningsintervall",
+      "one": "{count} inspelningsintervall"
+    },
+    "window": {
+      "other": "{count} fönster",
+      "one": "{count} fönster"
+    },
+    "space": {
+      "other": "{count} mellanslag",
+      "one": "{count} utrymme"
+    },
+    "zone": {
+      "other": "{count} zoner",
+      "one": "{count} zon"
+    },
+    "device": {
+      "other": "{count} enheter",
+      "one": "{count} enhet"
+    }
+  },
+  "zh-TW": {
+    "camera": {
+      "other": "{count} 台相機"
+    },
+    "channel": {
+      "other": "{count} 個頻道"
+    },
+    "fragment": {
+      "other": "{count} 記錄間隔"
+    },
+    "window": {
+      "other": "{count} 個視窗"
+    },
+    "space": {
+      "other": "{count} 個空格"
+    },
+    "zone": {
+      "other": "{count} 個區域"
+    },
+    "device": {
+      "other": "{count} 台設備"
+    }
+  },
+  "tr": {
+    "camera": {
+      "other": "{count} kamera",
+      "one": "{count} kamera"
+    },
+    "channel": {
+      "other": "{count} kanal",
+      "one": "{count} kanal"
+    },
+    "fragment": {
+      "other": "{count} kayıt aralığı",
+      "one": "{count} kayıt aralığı"
+    },
+    "window": {
+      "other": "{count} pencere",
+      "one": "{count} pencere"
+    },
+    "space": {
+      "other": "{count} boşluk",
+      "one": "{count} boşluk"
+    },
+    "zone": {
+      "other": "{count} bölge",
+      "one": "{count} bölge"
+    },
+    "device": {
+      "other": "{count} cihaz",
+      "one": "{count} cihaz"
+    }
+  },
+  "uk": {
+    "camera": {
+      "many": "{count} камер",
+      "one": "{count} камера",
+      "few": "{count} камери",
+      "other": "{count} камери"
+    },
+    "channel": {
+      "many": "{count} каналів",
+      "one": "{count} канал",
+      "few": "{count} канали",
+      "other": "{count} канали"
+    },
+    "fragment": {
+      "many": "{count} інтервалів запису",
+      "one": "{count} інтервал запису",
+      "few": "{count} інтервали запису",
+      "other": "{count} інтервали запису"
+    },
+    "window": {
+      "many": "{count} вікон",
+      "one": "{count} вікно",
+      "few": "{count} вікна",
+      "other": "{count} вікна"
+    },
+    "space": {
+      "many": "{count} пробілів",
+      "one": "{count} пробіл",
+      "few": "{count} пробіли",
+      "other": "{count} пробіли"
+    },
+    "zone": {
+      "many": "{count} зон",
+      "one": "{count} зона",
+      "few": "{count} зони",
+      "other": "{count} зони"
+    },
+    "device": {
+      "many": "{count} пристроїв",
+      "one": "{count} пристрій",
+      "few": "{count} пристрої",
+      "other": "{count} пристроїв"
+    }
+  },
+  "vi": {
+    "camera": {
+      "other": "{count} máy ảnh"
+    },
+    "channel": {
+      "other": "{count} kênh"
+    },
+    "fragment": {
+      "other": "{count} khoảng thời gian ghi"
+    },
+    "window": {
+      "other": "{count} cửa sổ"
+    },
+    "space": {
+      "other": "{count} khoảng trống"
+    },
+    "zone": {
+      "other": "{count} vùng"
+    },
+    "device": {
+      "other": "{count} thiết bị"
+    }
+  }
+}

@@ -1,6 +1,14 @@
-VWSHub 0.8.5 — third-party notices
+WVW 0.9.0 — third-party notices
 Python packages are installed separately; their own licenses remain applicable.
 
+
+Bundled HEVC client assets (same-origin, no CDN):
+- @hevcjs/hlsjs-plugin 0.1.12 — static/vendor/hevc/HEVC-PLUGIN-LICENSE.txt
+- @hevcjs/core 1.7.0 — static/vendor/hevc/HEVC-CORE-LICENSE.txt
+- mp4box 2.4.1 — static/vendor/hevc/MP4BOX-LICENSE.txt
+Exact versions, source transformations, integrity hashes and build instructions:
+scripts/hevc/README.md; static/vendor/hevc/manifest.json.
+esbuild 0.28.2 is a build dependency and is not shipped as an employee runtime.
 
 hls.js 1.7.3 — static/hls.min.js
 Source: https://raw.githubusercontent.com/video-dev/hls.js/v1.7.3/LICENSE

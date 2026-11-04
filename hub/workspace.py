@@ -30,7 +30,7 @@ def icon_name(value, default="layers-3"):
     return value
 
 
-def commit_catalog(rt, cameras, devices, spaces, users=None):
+def commit_catalog(rt, cameras, devices, spaces, users=None, images=None):
     cameras, devices = physical_catalog(cameras, devices, rt.store.connection_key)
     spaces = normalize_spaces(spaces, cameras)
     values = {"devices.json": cameras, "recorders.json": devices, "groups.json": spaces}
@@ -40,8 +40,12 @@ def commit_catalog(rt, cameras, devices, spaces, users=None):
         for user in users:
             user["grants"]={kind:{key:level for key,level in scope.items() if key in known[kind]} for kind,scope in access.grants(user).items()}
         values["users.json"] = [access.normalize_user(u) for u in users]
-    rt.store.transaction({name: json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-                          for name, value in values.items()})
+    payload={name: json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8") for name,value in values.items()}
+    if images:
+        from .images import validate_asset
+        for name,raw in images.items():
+            validate_asset(name,raw);payload["images/"+name]=raw
+    rt.store.transaction(payload)
 
 
 def source_public(rt, camera, user, spaces=None):
