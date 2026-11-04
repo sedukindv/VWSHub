@@ -81,9 +81,11 @@ Every functional matrix case attaches a PNG and JSON layout diagnostics to the
 HTML report. These artifacts are evidence for human review; capturing them alone
 is **not** a visual-regression pass.
 
-No golden images are supplied from the restricted authoring machine. First create
-candidate baselines on the chosen Linux/Chromium CI image, review every image,
-then commit the approved `snapshots/` directory:
+The committed `snapshots/` directory supplies 162 reviewed Linux/Chromium images.
+Its [review record](snapshots/REVIEW.md) identifies the source runs and the scope
+of the primary agent's visual review. For a deliberate future change, generate
+candidates on the same Linux/Chromium CI image, inspect every changed image,
+then commit the approved files separately:
 
 ```sh
 npm run visual:update
@@ -118,16 +120,15 @@ matrix screenshots/diagnostics; `playwright-report/` is the HTML report.
 Run `npm run report` to inspect it. CI should upload both directories even on
 failure. All generated artifacts and node_modules are ignored by git.
 
-## Verification status of this contribution
+## Executed verification
 
-The JavaScript files were checked with `node --check`. The installed pinned
-Playwright runner successfully discovered all 364 tests using `test --list`
-(202 functional and 162 visual), which starts neither a browser nor the fixture
-server. No CLI browser was launched
-in the restricted Windows environment (known browser spawn EPERM / absent browser
-binary). These newly authored tests and goldens must be executed/reviewed on Linux
-before claiming a browser-suite pass. Existing native CUA checks are separate
-evidence and are not execution of this suite.
+[Tests #52](https://github.com/sedukindv/WVW/actions/runs/41933526895) executed all
+202 functional tests successfully (261.06 s, no failures/retries/skips), then
+generated 162 candidates for visual review (178.72 s). The primary agent inspected
+all 18 contact sheets and the four corrected narrow archive originals. Generation
+does not count as a comparison pass. The release's separate comparison result is
+recorded in `../../TEST_REPORT.md`. Existing native CUA checks are additional
+evidence and are not execution of this Playwright suite.
 
 References: [Playwright visual comparisons](https://playwright.dev/docs/test-snapshots),
 [web server configuration](https://playwright.dev/docs/test-webserver),
@@ -136,7 +137,7 @@ References: [Playwright visual comparisons](https://playwright.dev/docs/test-sna
 
 ## GitHub Actions
 
-`.github/workflows/tests.yml` runs the Python suite, every `*.test.cjs` Node unit test, recursive JavaScript syntax, HTTPS shell syntax and checked-in HEVC SHA-256 validation. Its separate Ubuntu 24.04 browser job uses the committed lockfile, installs matching Chromium plus system dependencies and runs the functional suite only. Failure traces/screenshots and the HTML report are uploaded for review. These workflow definitions are not a claim that the jobs have already executed successfully.
+`.github/workflows/tests.yml` runs the Python suite, every `*.test.cjs` Node unit test, recursive JavaScript syntax, HTTPS shell syntax and checked-in HEVC SHA-256 validation. Its separate Ubuntu 24.04 browser job uses the committed lockfile, installs matching Chromium plus system dependencies and runs the functional suite. After both jobs succeed, `browser-visual-review` compares all 162 committed images with updates disabled. Missing images fail ordinary CI. Reports and failure traces/screenshots are uploaded for review.
 
 `.github/workflows/visual-review.yml` is manual (`workflow_dispatch`) with two explicit modes:
 
@@ -155,6 +156,10 @@ The workflow creates a short-lived loopback certificate using `create_test_tls.p
 The fixture generates and FFprobe-verifies an actual HEVC source, remuxes it to fMP4 HLS with `copy`, and supplies factual HEVC metadata with the optional RFC6381 detail absent. That supported metadata case selects software decoding without replacing browser APIs or disabling security. The test requires Worker/WASM requests, actual decoded/advancing video frames, and successful playback after navigation teardown. Native HEVC support for a specific camera/OS is a separate check. Passing test discovery alone is not a positive HEVC browser result.
 
 
-Before the new manual workflow reaches the default branch, the existing **Tests** workflow can also be dispatched explicitly on a `release-*` branch. After its functional checks pass, its `browser-visual-review` job generates unapproved candidates if `snapshots/` is absent; when committed images exist it compares with updates disabled. The job has read-only repository permissions and never commits images. Review every candidate and commit the approved images separately before calling the result a visual-regression pass. Ordinary push/PR runs never generate or update goldens.
-
-An explicit `[visual review]` commit marker on a `release-*` branch also requests the read-only visual-review job. It follows the same candidate/review/compare rules; ordinary commits never update goldens.
+For initial baseline creation only, an explicit dispatch or `[visual review]`
+commit marker on a `release-*` branch permits candidate generation when the whole
+snapshot directory is absent. Existing baselines always cause comparison; partial
+sets fail rather than accepting missing images. The job has read-only repository
+permissions and never commits images. Ordinary push/PR verification cannot
+generate, change or accept goldens. For future intentional pixel updates, use the
+manual `candidates` workflow and a separate reviewed commit.
