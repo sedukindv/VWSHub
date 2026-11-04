@@ -1,4 +1,4 @@
-/* VWSHub 0.8.5: physical inventory, spaces, zones and resource access. */
+/* WVW 0.9.0: physical inventory, spaces, zones and resource access. */
 (() => {
   "use strict";
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -7,7 +7,7 @@
   ];
   function iconPicker(host, current = "folder", H, onChange = () => {}) {
     const { h, icon } = H,
-      L = (ru, en) => (H.state.language === "en" ? en : ru);
+      L = (ru, en) => window.WVWI18n.translate(ru,H.state.language,en || ru);
     let selected = current,
       query = "",
       offset = 0,
@@ -157,9 +157,11 @@
   function mount({ root, mode, hub: H }) {
     const { h, api, icon } = H,
       S = H.state;
-    const L = (ru, en) => (S.language === "en" ? en : ru);
-    const plural = (count, forms, en) =>
-      `${count} ${S.language === "en" ? (count === 1 ? en[0] : en[1]) : forms[new Intl.PluralRules("ru").select(count) === "one" ? 0 : new Intl.PluralRules("ru").select(count) === "few" ? 1 : 2]}`;
+    const L = (ru, en) => window.WVWI18n.translate(ru,S.language,en || ru);
+    const plural = (count, forms, en) => {
+      const noun={"камера":"camera","канал":"channel","пространство":"space","зона":"zone","устройство":"device","окно":"window"}[forms[0]];
+      return noun ? window.WVWI18n.count(count,noun,S.language) : window.WVWI18n.number(count,S.language)+" "+L(forms[new Intl.PluralRules("ru").select(count)==="one"?0:new Intl.PluralRules("ru").select(count)==="few"?1:2],count===1?en[0]:en[1]);
+    };
     const admin = S.user.role === "admin";
     const feature = (name) => admin || !!S.user.permissions?.[name];
     let disposed = false;
@@ -229,7 +231,7 @@
         description,
         actions,
         toolbar + body,
-        "VWSHUB 0.8.5",
+        "WVW 0.9.0",
       );
       $("[data-do=import]", root)?.addEventListener("click", () =>
         importDialog(
@@ -289,6 +291,7 @@
     function status(camera) {
       const data = S.statuses?.[camera.id];
       const online = typeof data === "boolean" ? data : data?.online;
+      if (data?.overall === "partial") return { key:"warning",text:L("Частично доступно", "Partially available") };
       return {
         key:
           online === true ? "online" : online === false ? "offline" : "unknown",
@@ -310,7 +313,7 @@
         hidden: false,
       };
       const f = S.inventoryFilters;
-      const toolbar = `${admin ? `<details class="infra-display-options"><summary>${icon("sliders-horizontal")}${h(L("Отображение устройств", "Device display"))}${icon("chevron-down")}</summary><div class="infra-display-fields">${field(L("Подписи в просмотре", "Labels in Live view"), `<select class="select" data-device-labels><option value="ip" ${S.branding.recorder_labels !== "name" ? "selected" : ""}>IP</option><option value="name" ${S.branding.recorder_labels === "name" ? "selected" : ""}>${h(L("Имя устройства", "Device name"))}</option></select>`)}</div></details>` : ""}<div class="toolbar infra-toolbar"><label class="search-field">${icon("search")}<input type="search" data-inventory-search value="${h(f.query)}" placeholder="${h(L("Имя, адрес, регистратор или канал…", "Name, address, recorder or channel…"))}" aria-label="${h(L("Поиск устройств", "Search devices"))}"></label><select class="select" data-filter="kind" aria-label="${h(L("Тип устройства", "Device type"))}"><option value="">${h(L("Все устройства", "All devices"))}</option><option value="recorder">${h(L("Регистраторы", "Recorders"))}</option><option value="camera">${h(L("IP-камеры", "IP cameras"))}</option></select><select class="select" data-filter="protocol" aria-label="${h(L("Протокол", "Protocol"))}"><option value="">${h(L("Все протоколы", "All protocols"))}</option><option>DVRIP</option><option>ONVIF</option></select><select class="select" data-filter="status" aria-label="${h(L("Статус", "Status"))}"><option value="">${h(L("Любой статус", "Any status"))}</option><option value="online">${h(L("В сети", "Online"))}</option><option value="offline">${h(L("Не в сети", "Offline"))}</option><option value="unknown">${h(L("Не проверен", "Not checked"))}</option></select><label class="infra-check"><input type="checkbox" data-hidden ${f.hidden ? "checked" : ""}>${h(L("Скрытые", "Hidden"))}</label></div>`;
+      const toolbar = `${admin ? `<details class="infra-display-options"><summary>${icon("sliders-horizontal")}${h(L("Отображение устройств", "Device display"))}${icon("chevron-down")}</summary><div class="infra-display-fields">${field(L("Подписи в просмотре", "Labels in Live view"), `<select class="select" data-device-labels><option value="ip" ${S.branding.recorder_labels !== "name" ? "selected" : ""}>IP</option><option value="name" ${S.branding.recorder_labels === "name" ? "selected" : ""}>${h(L("Имя устройства", "Device name"))}</option></select>`)}</div></details>` : ""}<div class="toolbar infra-toolbar"><label class="search-field">${icon("search")}<input type="search" data-inventory-search value="${h(f.query)}" placeholder="${h(L("Имя, адрес, регистратор или канал…", "Name, address, recorder or channel…"))}" aria-label="${h(L("Поиск устройств", "Search devices"))}"></label><select class="select" data-filter="kind" aria-label="${h(L("Тип устройства", "Device type"))}"><option value="">${h(L("Все устройства", "All devices"))}</option><option value="recorder">${h(L("Регистраторы", "Recorders"))}</option><option value="camera">${h(L("IP-камеры", "IP cameras"))}</option></select><select class="select" data-filter="protocol" aria-label="${h(L("Протокол", "Protocol"))}"><option value="">${h(L("Все протоколы", "All protocols"))}</option><option>DVRIP</option><option>ONVIF</option></select><select class="select" data-filter="status" aria-label="${h(L("Статус", "Status"))}"><option value="">${h(L("Любой статус", "Any status"))}</option><option value="online">${h(L("В сети", "Online"))}</option><option value="warning">${h(L("Частично доступно", "Partially available"))}</option><option value="offline">${h(L("Не в сети", "Offline"))}</option><option value="unknown">${h(L("Не проверен", "Not checked"))}</option></select><label class="infra-check"><input type="checkbox" data-hidden ${f.hidden ? "checked" : ""}>${h(L("Скрытые", "Hidden"))}</label></div>`;
       const cards = (S.inventory || [])
         .map((device) => {
           const title =
@@ -320,18 +323,18 @@
           const rows = device.channels
             .map((camera) => {
               const checked = status(camera);
-              return `<div class="inventory-channel ${camera.is_hidden ? "is-hidden-source" : ""}" data-channel="${h(camera.id)}" data-search="${h([device.name, device.ip, camera.name, Number(camera.channel || 0) + 1].join(" "))}" data-hidden-source="${!!camera.is_hidden}" data-status="${checked.key}"><span class="infra-source-icon">${icon(device.kind === "recorder" ? "webcam" : "camera")}</span><div class="infra-name"><strong>${h(camera.name)}</strong><small>${h(device.kind === "recorder" ? L("Канал ", "Channel ") + (Number(camera.channel || 0) + 1) : device.ip)}</small></div><span class="infra-channel-state">${camera.is_hidden ? badge(L("Скрыта", "Hidden"), "muted") : badge(checked.text, checked.key)}</span><div class="infra-actions">${!camera.is_hidden && feature("live") ? action("watch", camera.id, L("Смотреть", "Watch"), "play") : ""}${camera.can_edit ? action("source", camera.id, camera.can_manage ? L("Имя и видимость", "Name and visibility") : L("Имя камеры", "Camera name"), "pencil") : ""}${camera.can_manage ? action("visibility", camera.id, camera.is_hidden ? L("Показать камеру", "Show camera") : L("Скрыть камеру", "Hide camera"), camera.is_hidden ? "eye" : "eye-off") : ""}${camera.can_manage ? action("delete-source", camera.id, L("Удалить канал из VWSHub", "Remove channel from VWSHub"), "trash-2") : ""}</div></div>`;
+              return `<div class="inventory-channel ${camera.is_hidden ? "is-hidden-source" : ""}" data-channel="${h(camera.id)}" data-search="${h([device.name, device.ip, camera.name, Number(camera.channel || 0) + 1].join(" "))}" data-hidden-source="${!!camera.is_hidden}" data-status="${checked.key}"><span class="infra-source-icon">${icon(device.kind === "recorder" ? "webcam" : "camera")}</span><div class="infra-name"><strong data-no-i18n>${h(camera.name)}</strong><small>${h(device.kind === "recorder" ? L("Канал ", "Channel ") + (Number(camera.channel || 0) + 1) : device.ip)}</small></div><span class="infra-channel-state">${camera.is_hidden ? badge(L("Скрыта", "Hidden"), "muted") : badge(checked.text, checked.key)}</span><div class="infra-actions">${!camera.is_hidden && feature("live") ? action("watch", camera.id, L("Смотреть", "Watch"), "play") : ""}${camera.can_edit ? action("source", camera.id, camera.can_manage ? L("Имя и видимость", "Name and visibility") : L("Имя камеры", "Camera name"), "pencil") : ""}${camera.can_manage ? action("visibility", camera.id, camera.is_hidden ? L("Показать камеру", "Show camera") : L("Скрыть камеру", "Hide camera"), camera.is_hidden ? "eye" : "eye-off") : ""}${camera.can_manage ? action("delete-source", camera.id, L("Удалить канал из WVW", "Remove channel from WVW"), "trash-2") : ""}</div></div>`;
             })
             .join("");
           const hidden = device.channels.filter((c) => c.is_hidden).length;
-          return `<details class="inventory-device" data-device="${h(device.id)}" data-kind="${device.kind}" data-protocol="${h(device.protocol.toUpperCase())}" ${S.inventoryOpen?.[device.id] !== false ? "open" : ""}><summary><span class="inventory-kind">${icon(device.kind === "recorder" ? "server" : "camera")}</span><div class="infra-name"><strong>${h(device.name)}</strong><small>${h(title)} · ${h(device.ip)}:${h(device.port)} · ${h(device.protocol.toUpperCase())}</small></div><span class="inventory-count">${device.channels.length} ${h(L("кан.", "ch."))}${hidden ? ` · ${hidden} ${h(L("скрыто", "hidden"))}` : ""}</span><div class="infra-actions">${device.can_edit ? action("device", device.id, L("Изменить устройство / каналы", "Edit device / channels"), "settings-2") + action("delete-device", device.id, L("Удалить устройство из VWSHub", "Remove device from VWSHub"), "trash-2") : ""}</div><span class="inventory-chevron">${icon("chevron-down")}</span></summary><div class="inventory-channels">${rows || `<p class="infra-inline-empty">${h(L("Каналы ещё не добавлены. Откройте устройство и выберите доступные каналы.", "No channels added. Open this device and select its available channels."))}</p>`}</div></details>`;
+          return `<details class="inventory-device" data-device="${h(device.id)}" data-kind="${device.kind}" data-protocol="${h(device.protocol.toUpperCase())}" ${S.inventoryOpen?.[device.id] !== false ? "open" : ""}><summary><span class="inventory-kind">${icon(device.kind === "recorder" ? "server" : "camera")}</span><div class="infra-name"><strong data-no-i18n>${h(device.name)}</strong><small>${h(title)} · ${h(device.ip)}:${h(device.port)} · ${h(device.protocol.toUpperCase())}</small></div><span class="inventory-count">${device.channels.length} ${h(L("кан.", "ch."))}${hidden ? ` · ${hidden} ${h(L("скрыто", "hidden"))}` : ""}</span><div class="infra-actions">${device.can_edit ? action("device", device.id, L("Изменить устройство / каналы", "Edit device / channels"), "settings-2") + action("delete-device", device.id, L("Удалить устройство из WVW", "Remove device from WVW"), "trash-2") : ""}</div><span class="inventory-chevron">${icon("chevron-down")}</span></summary><div class="inventory-channels">${rows || `<p class="infra-inline-empty">${h(L("Каналы ещё не добавлены. Откройте устройство и выберите доступные каналы.", "No channels added. Open this device and select its available channels."))}</p>`}</div></details>`;
         })
         .join("");
       page(
         L("Устройства", "Devices"),
         L(
-          "Подключения, каналы и видимость камер. Имена меняются только в VWSHub.",
-          "Connections, channels and camera visibility. Names are local to VWSHub.",
+          "Подключения, каналы и видимость камер. Имена меняются только в WVW.",
+          "Connections, channels and camera visibility. Names are local to WVW.",
         ),
         transferActions() +
           button(
@@ -450,8 +453,8 @@
           confirmDialog(
             L("Удалить канал?", "Remove channel?"),
             L(
-              `«${camera.name}» будет удалена из VWSHub и всех пространств. Записи на оборудовании сохранятся.`,
-              `“${camera.name}” will be removed from VWSHub and every space. Recordings on the hardware remain.`,
+              `«${camera.name}» будет удалена из WVW и всех пространств. Записи на оборудовании сохранятся.`,
+              `“${camera.name}” will be removed from WVW and every space. Recordings on the hardware remain.`,
             ),
             () =>
               api(`/api/inventory/channels/${encodeURIComponent(id)}`, {
@@ -463,8 +466,8 @@
           confirmDialog(
             L("Удалить устройство?", "Remove device?"),
             L(
-              `«${device.name}» и все его каналы будут удалены из VWSHub. Данные на оборудовании сохранятся.`,
-              `“${device.name}” and all its channels will be removed from VWSHub. Data on the hardware remains.`,
+              `«${device.name}» и все его каналы будут удалены из WVW. Данные на оборудовании сохранятся.`,
+              `“${device.name}” and all its channels will be removed from WVW. Data on the hardware remains.`,
             ),
             () =>
               api(`/api/inventory/${encodeURIComponent(id)}`, {
@@ -519,6 +522,8 @@
         `${feedback}<form id="source-form" class="form-stack">${field(L("Локальное имя", "Local name"), input("name", camera.name, 'required maxlength="150"'))}${camera.can_manage ? `<label class="infra-check"><input type="checkbox" name="visible" ${!camera.is_hidden ? "checked" : ""}>${h(L("Показывать в просмотре и архиве", "Show in Live and Archive"))}</label><p class="infra-help">${h(L("Скрытая камера остаётся в устройствах и пространствах. Её ячейки на видеостене становятся пустыми.", "Hidden cameras remain in Devices and Spaces. Their video wall cells become unassigned."))}</p>` : ""}</form>`,
         `<button class="btn btn-primary" form="source-form" type="submit">${icon("check")}${h(L("Сохранить", "Save"))}</button>`,
       );
+      $(".modal-head p",modal).textContent = camera.parent.name;
+      $(".modal-head p",modal).dataset.noI18n = "";
       $("#source-form", modal).onsubmit = async (event) => {
         event.preventDefault();
         const form = event.target;
@@ -816,7 +821,7 @@
           $(".infra-discovery-list", modal).innerHTML = result.devices
             .map(
               (d, index) =>
-                `<div class="infra-reference-row"><span>${icon(d.protocol === "dvrip" ? "server" : "camera")}</span><div class="infra-name"><strong>${h(d.name)}</strong><small>${h(d.ip)}:${d.port} · ${h(d.protocol.toUpperCase())}</small></div>${button("choose", L("Подключить", "Connect"), "plus", false, `data-index="${index}"`)}</div>`,
+                `<div class="infra-reference-row"><span>${icon(d.protocol === "dvrip" ? "server" : "camera")}</span><div class="infra-name"><strong data-no-i18n>${h(d.name)}</strong><small>${h(d.ip)}:${d.port} · ${h(d.protocol.toUpperCase())}</small></div>${button("choose", L("Подключить", "Connect"), "plus", false, `data-index="${index}"`)}</div>`,
             )
             .join("");
           $$("[data-do=choose]", modal).forEach(
@@ -942,7 +947,7 @@
           payload = JSON.parse(raw);
           if (!payload || typeof payload !== "object" || Array.isArray(payload))
             throw Error(
-              L("Нужен JSON каталога VWSHub", "Choose a VWSHub catalog JSON"),
+              L("Нужен JSON каталога WVW", "Choose a WVW catalog JSON"),
             );
           $("[data-import-secret]", modal).hidden =
             payload.format !== "vwshub.devices.protected";
@@ -1054,7 +1059,7 @@
             .map((space) => {
               const pending = space.members.filter((m) => !m.channel_id).length,
                 hidden = space.members.filter((m) => m.is_hidden).length;
-              return `<tr class="infra-space-row" data-search="${h([space.name, ...space.zones.map((z) => z.name)].join(" "))}"><td><div class="infra-table-name"><span class="infra-space-mark">${window.VWSIcons.html(space.icon, "layers-3")}</span><button class="infra-name-link" type="button" data-do="open-space" data-id="${h(space.id)}">${h(space.name)}</button></div></td><td><div class="infra-name"><strong>${h(plural(space.camera_ids.length, ["камера", "камеры", "камер"], ["camera", "cameras"]))} · ${h(plural(space.zones.length, ["зона", "зоны", "зон"], ["zone", "zones"]))}</strong><small>${h(
+              return `<tr class="infra-space-row" data-search="${h([space.name, ...space.zones.map((z) => z.name)].join(" "))}"><td><div class="infra-table-name"><span class="infra-space-mark">${window.VWSIcons.html(space.icon, "layers-3")}</span><button class="infra-name-link" type="button" data-do="open-space" data-id="${h(space.id)}" data-no-i18n>${h(space.name)}</button></div></td><td><div class="infra-name"><strong>${h(plural(space.camera_ids.length, ["камера", "камеры", "камер"], ["camera", "cameras"]))} · ${h(plural(space.zones.length, ["зона", "зоны", "зон"], ["zone", "zones"]))}</strong><small data-no-i18n>${h(
                 space.zones
                   .map((z) => z.name)
                   .slice(0, 3)
@@ -1132,13 +1137,13 @@
         const ordered = members.filter((member) => member.channel_id),
           first = ordered[0]?.id,
           last = ordered.at(-1)?.id;
-        return `<section class="infra-zone"><header><span class="infra-zone-icon">${window.VWSIcons.html(zone?.icon || space.icon, zone ? "map-pin" : "folder")}</span><div class="infra-name"><h2>${h(zone?.name || L("Корень пространства", "Space root"))}</h2><small>${h(plural(members.length, ["источник", "источника", "источников"], ["source", "sources"]))}</small></div><div class="infra-actions">${feature("live") ? action("watch-zone", zone?.id || "", L("На видеостену", "Show on wall"), "play") : ""}${editable ? action("members", zone?.id || "", L("Выбрать камеры", "Choose cameras"), "list-plus") : ""}${zone && editable ? action("edit-zone", zone.id, L("Изменить зону", "Edit zone"), "pencil") : ""}${zone && space.can_edit ? action("zone-up", zone.id, L("Выше", "Move up"), "arrow-up", space.zones[0]?.id === zone.id) + action("zone-down", zone.id, L("Ниже", "Move down"), "arrow-down", space.zones.at(-1)?.id === zone.id) : ""}${zone && editable ? action("delete-zone", zone.id, L("Удалить зону", "Delete zone"), "trash-2") : ""}</div></header><div class="infra-zone-members">${
+        return `<section class="infra-zone"><header><span class="infra-zone-icon">${window.VWSIcons.html(zone?.icon || space.icon, zone ? "map-pin" : "folder")}</span><div class="infra-name"><h2 data-no-i18n>${h(zone?.name || L("Корень пространства", "Space root"))}</h2><small>${h(plural(members.length, ["источник", "источника", "источников"], ["source", "sources"]))}</small></div><div class="infra-actions">${feature("live") ? action("watch-zone", zone?.id || "", L("На видеостену", "Show on wall"), "play") : ""}${editable ? action("members", zone?.id || "", L("Выбрать камеры", "Choose cameras"), "list-plus") : ""}${zone && editable ? action("edit-zone", zone.id, L("Изменить зону", "Edit zone"), "pencil") : ""}${zone && space.can_edit ? action("zone-up", zone.id, L("Выше", "Move up"), "arrow-up", space.zones[0]?.id === zone.id) + action("zone-down", zone.id, L("Ниже", "Move down"), "arrow-down", space.zones.at(-1)?.id === zone.id) : ""}${zone && editable ? action("delete-zone", zone.id, L("Удалить зону", "Delete zone"), "trash-2") : ""}</div></header><div class="infra-zone-members">${
           members
             .map((member) => {
               const camera =
                 byId.get(member.channel_id) ||
                 S.cameras.find((c) => c.id === member.channel_id);
-              return `<div class="infra-reference-row"><span class="infra-source-icon">${icon(member.channel_id ? "webcam" : "unplug")}</span><div class="infra-name"><strong>${h(member.name)}</strong><small>${h(!member.channel_id ? member.source_id : camera?.parent?.name || camera?.recorder_name || "")}</small></div>${!member.channel_id ? badge(L("Ожидает камеру", "Pending camera"), "warning") : member.is_hidden ? hiddenMark() : ""}<div class="infra-actions">${member.channel_id && !member.is_hidden && feature("live") ? action("watch-source", member.channel_id, L("Смотреть", "Watch"), "play") : ""}${editable && !member.channel_id ? action("match", member.id, L("Сопоставить камеру", "Match camera"), "link") : ""}${editable && member.channel_id ? action("move", member.id, L("Переместить в зону", "Move to zone"), "folder-input") : ""}${camera?.can_edit ? action("rename", member.channel_id, L("Имя камеры", "Camera name"), "pencil") : ""}${editable && member.channel_id ? action("member-up", member.id, L("Порядок: выше", "Order: move up"), "arrow-up", member.id === first) + action("member-down", member.id, L("Порядок: ниже", "Order: move down"), "arrow-down", member.id === last) : ""}${editable ? action("detach", member.id, L("Убрать из пространства", "Remove from space"), "log-out") : ""}</div></div>`;
+              return `<div class="infra-reference-row"><span class="infra-source-icon">${icon(member.channel_id ? "webcam" : "unplug")}</span><div class="infra-name"><strong data-no-i18n>${h(member.name)}</strong><small data-no-i18n>${h(!member.channel_id ? member.source_id : camera?.parent?.name || camera?.recorder_name || "")}</small></div>${!member.channel_id ? badge(L("Ожидает камеру", "Pending camera"), "warning") : member.is_hidden ? hiddenMark() : ""}<div class="infra-actions">${member.channel_id && !member.is_hidden && feature("live") ? action("watch-source", member.channel_id, L("Смотреть", "Watch"), "play") : ""}${editable && !member.channel_id ? action("match", member.id, L("Сопоставить камеру", "Match camera"), "link") : ""}${editable && member.channel_id ? action("move", member.id, L("Переместить в зону", "Move to zone"), "folder-input") : ""}${camera?.can_edit ? action("rename", member.channel_id, L("Имя камеры", "Camera name"), "pencil") : ""}${editable && member.channel_id ? action("member-up", member.id, L("Порядок: выше", "Order: move up"), "arrow-up", member.id === first) + action("member-down", member.id, L("Порядок: ниже", "Order: move down"), "arrow-down", member.id === last) : ""}${editable ? action("detach", member.id, L("Убрать из пространства", "Remove from space"), "log-out") : ""}</div></div>`;
             })
             .join("") ||
           `<p class="infra-inline-empty">${h(L("Нет камер. Добавьте доступные источники.", "No cameras. Add accessible sources."))}</p>`
@@ -1167,6 +1172,9 @@
             : ""),
         `<div class="infra-space-detail">${section()}${space.zones.map((zone) => section(zone)).join("")}</div>`,
       );
+      const heading = $(".page-head h1",root);
+      heading.textContent = space.name;
+      heading.dataset.noI18n = "";
       $("[data-do=back]", root).onclick = () => {
         S.openSpaceId = null;
         spacesPage();
@@ -1308,6 +1316,10 @@
         `${feedback}<form id="space-form" class="form-stack">${field(L("Название", "Name"), input("name", current?.name || "", 'required maxlength="100"'))}<div class="form-field"><label>${h(L("Значок", "Icon"))}</label><div data-icon-picker></div></div></form>`,
         `<button class="btn btn-primary" form="space-form" type="submit">${icon("check")}${h(L("Сохранить", "Save"))}</button>`,
       );
+      if(space?.name) {
+        $(".modal-head p",modal).textContent = space.name;
+        $(".modal-head p",modal).dataset.noI18n = "";
+      }
       iconPicker(
         $("[data-icon-picker]", modal),
         current?.icon || (isZone ? "map-pin" : "layers-3"),
@@ -1367,7 +1379,7 @@
                     other =
                       previous &&
                       (previous.zone_id || null) !== (zone?.id || null);
-                  return `<label class="infra-source-option" data-search="${h(source.name + " " + source.parent.name + " " + source.ip)}"><input type="checkbox" value="${h(source.id)}" ${selected.has(source.id) ? "checked" : ""}><span>${icon(source.parent.kind === "recorder" ? "webcam" : "camera")}</span><div class="infra-name"><strong>${h(source.name)}</strong><small>${h(source.parent.name)}${other ? " · " + h(L("Переместить из: ", "Move from: ") + (space.zones.find((z) => z.id === previous.zone_id)?.name || L("Корень", "Root"))) : ""}</small></div>${source.is_hidden ? hiddenMark() : ""}</label>`;
+                  return `<label class="infra-source-option" data-search="${h(source.name + " " + source.parent.name + " " + source.ip)}"><input type="checkbox" value="${h(source.id)}" ${selected.has(source.id) ? "checked" : ""}><span>${icon(source.parent.kind === "recorder" ? "webcam" : "camera")}</span><div class="infra-name"><strong data-no-i18n>${h(source.name)}</strong><small data-no-i18n>${h(source.parent.name)}${other ? " · " + h(L("Переместить из: ", "Move from: ") + (space.zones.find((z) => z.id === previous.zone_id)?.name || L("Корень", "Root"))) : ""}</small></div>${source.is_hidden ? hiddenMark() : ""}</label>`;
                 })
                 .join("")
             : `<p class="infra-inline-empty">${h(L("Нет камер с правом редактирования", "No cameras with edit access"))}</p>`
@@ -1464,7 +1476,7 @@
       const modal = H.modal(
         L("Переместить камеру", "Move camera"),
         member.name,
-        `${feedback}${field(L("Расположение", "Location"), `<select class="select" name="zone">${targets.map((z) => `<option value="${h(z.id)}">${h(z.name)}</option>`).join("")}</select>`)}`,
+        `${feedback}${field(L("Расположение", "Location"), `<select class="select" name="zone">${targets.map((z) => `<option value="${h(z.id)}" data-no-i18n>${h(z.name)}</option>`).join("")}</select>`)}`,
         button(
           "move-save",
           L("Переместить", "Move"),
@@ -1473,6 +1485,8 @@
           targets.length ? "" : "disabled",
         ),
       );
+      $(".modal-head p",modal).textContent = member.name;
+      $(".modal-head p",modal).dataset.noI18n = "";
       $("[data-do=move-save]", modal).onclick = async () => {
         try {
           const target = $("[name=zone]", modal).value,
@@ -1493,7 +1507,7 @@
     }
 
     function usersPage() {
-      const body = `<div class="table-wrap"><table class="data-table infra-users-table"><thead class="infra-list-head"><tr><th>${h(L("Пользователь", "User"))}</th><th>${h(L("Роль и статус", "Role and status"))}</th><th>${h(L("Разрешения", "Permissions"))}</th><th class="actions-column">${h(L("Действия", "Actions"))}</th></tr></thead><tbody>${S.users.map((user) => `<tr data-user-row data-search="${h(user.username + " " + user.alias)}"><td><div class="infra-name"><strong>${h(user.alias)}</strong><small>${h(user.username)}</small></div></td><td><div class="infra-badge-list">${badge(user.role === "admin" ? L("Администратор", "Administrator") : L("Пользователь", "User"))}${!user.active ? badge(L("Неактивен", "Inactive"), "warning") : ""}</div></td><td><div class="infra-badge-list">${user.permissions.live ? badge(L("Просмотр", "Live"), "muted") : ""}${user.permissions.archive_view ? badge(L("Архив", "Archive"), "muted") : ""}${user.permissions.archive_export ? badge(L("Скачивание", "Download"), "online") : ""}${user.can_edit && user.role !== "admin" ? badge(L("Редактирование", "Edit")) : ""}</div></td><td class="actions-column"><div class="table-actions">${action("edit-user", user.username, L("Изменить", "Edit"), "pencil")}${action("clone-user", user.username, L("Копировать пользователя", "Copy user"), "copy")}${user.username !== S.user.username ? action("delete-user", user.username, L("Удалить пользователя", "Delete user"), "trash-2") : ""}</div></td></tr>`).join("")}</tbody></table></div>`;
+      const body = `<div class="table-wrap"><table class="data-table infra-users-table"><thead class="infra-list-head"><tr><th>${h(L("Пользователь", "User"))}</th><th>${h(L("Роль и статус", "Role and status"))}</th><th>${h(L("Разрешения", "Permissions"))}</th><th class="actions-column">${h(L("Действия", "Actions"))}</th></tr></thead><tbody>${S.users.map((user) => `<tr data-user-row data-search="${h(user.username + " " + user.alias)}"><td><div class="infra-name"><strong data-no-i18n>${h(user.alias)}</strong><small data-no-i18n>${h(user.username)}</small></div></td><td><div class="infra-badge-list">${badge(user.role === "admin" ? L("Администратор", "Administrator") : L("Пользователь", "User"))}${!user.active ? badge(L("Неактивен", "Inactive"), "warning") : ""}</div></td><td><div class="infra-badge-list">${user.permissions.live ? badge(L("Просмотр", "Live"), "muted") : ""}${user.permissions.archive_view ? badge(L("Архив", "Archive"), "muted") : ""}${user.permissions.archive_export ? badge(L("Скачивание", "Download"), "online") : ""}${user.can_edit && user.role !== "admin" ? badge(L("Редактирование", "Edit")) : ""}</div></td><td class="actions-column"><div class="table-actions">${action("edit-user", user.username, L("Изменить", "Edit"), "pencil")}${action("clone-user", user.username, L("Копировать пользователя", "Copy user"), "copy")}${user.username !== S.user.username ? action("delete-user", user.username, L("Удалить пользователя", "Delete user"), "trash-2") : ""}</div></td></tr>`).join("")}</tbody></table></div>`;
       page(
         L("Пользователи", "Users"),
         L(
@@ -1576,13 +1590,13 @@
       const spaceTree = S.groups
         .map(
           (space) =>
-            `<details class="infra-grant-branch" data-policy-name="${h(space.name)}"><summary><span class="infra-grant-chevron">${icon("chevron-right")}</span><span>${window.VWSIcons.html(space.icon, "layers-3")}</span><strong>${h(space.name)}</strong><small data-grant-summary></small>${grantSelect("spaces", space.id)}</summary>${space.zones.map((zone) => `<div class="infra-grant-row" data-policy-name="${h(zone.name)}"><span>${window.VWSIcons.html(zone.icon, "map-pin")}</span><span>${h(zone.name)}</span>${grantSelect("zones", zone.id, "spaces", space.id)}</div>`).join("")}</details>`,
+            `<details class="infra-grant-branch" data-policy-name="${h(space.name)}"><summary><span class="infra-grant-chevron">${icon("chevron-right")}</span><span>${window.VWSIcons.html(space.icon, "layers-3")}</span><strong data-no-i18n>${h(space.name)}</strong><small data-grant-summary></small>${grantSelect("spaces", space.id)}</summary>${space.zones.map((zone) => `<div class="infra-grant-row" data-policy-name="${h(zone.name)}"><span>${window.VWSIcons.html(zone.icon, "map-pin")}</span><span data-no-i18n>${h(zone.name)}</span>${grantSelect("zones", zone.id, "spaces", space.id)}</div>`).join("")}</details>`,
         )
         .join("");
       const deviceTree = (S.inventory || [])
         .map(
           (device) =>
-            `<details class="infra-grant-branch" data-policy-name="${h(device.name)}"><summary><span class="infra-grant-chevron">${icon("chevron-right")}</span><span>${icon(device.kind === "recorder" ? "server" : "camera")}</span><strong>${h(device.name)}</strong><small data-grant-summary></small>${grantSelect("devices", device.id)}</summary>${device.channels.map((camera) => `<div class="infra-grant-row" data-policy-name="${h(camera.name)}"><span>${icon(device.kind === "recorder" ? "webcam" : "camera")}</span><span>${h(camera.name)}${camera.is_hidden ? ` <small>${h(L("скрыта", "hidden"))}</small>` : ""}</span>${grantSelect("channels", camera.id, "devices", device.id)}</div>`).join("")}</details>`,
+            `<details class="infra-grant-branch" data-policy-name="${h(device.name)}"><summary><span class="infra-grant-chevron">${icon("chevron-right")}</span><span>${icon(device.kind === "recorder" ? "server" : "camera")}</span><strong data-no-i18n>${h(device.name)}</strong><small data-grant-summary></small>${grantSelect("devices", device.id)}</summary>${device.channels.map((camera) => `<div class="infra-grant-row" data-policy-name="${h(camera.name)}"><span>${icon(device.kind === "recorder" ? "webcam" : "camera")}</span><span data-no-i18n>${h(camera.name)}${camera.is_hidden ? ` <small>${h(L("скрыта", "hidden"))}</small>` : ""}</span>${grantSelect("channels", camera.id, "devices", device.id)}</div>`).join("")}</details>`,
         )
         .join("");
       const grantSection = (label, symbol, tree) =>

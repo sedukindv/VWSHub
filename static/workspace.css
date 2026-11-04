@@ -168,7 +168,7 @@ table:has(.table-actions) th:last-child,
 }
 .form-feedback.notice.error {
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--danger-text, var(--danger));
 }
 .group-access-row,
 .group-camera-row {
@@ -227,7 +227,7 @@ table:has(.table-actions) th:last-child,
   flex: none;
   border-radius: 10px;
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .group-icon svg {
   width: 18px;
@@ -367,7 +367,7 @@ table:has(.table-actions) th:last-child,
   font-size: 11px;
 }
 .segmented > button.active {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--surface);
   box-shadow: 0 1px 4px #0001;
 }

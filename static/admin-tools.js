@@ -30,7 +30,7 @@
     H.modal(
       "Импорт камер",
       "",
-      `<div class="form-stack"><div class="notice" id="import-feedback" role="status">${t("Выберите JSON, экспортированный из VWSHub.")}</div>${H.formField("Файл камер", '<input type="file" id="camera-import-file" class="field file-field" accept=".json,application/json">')}${H.formField("Режим импорта", `<select id="camera-import-mode" class="select"><option value="add">${t("Добавить новые камеры")}</option><option value="update">${t("Обновить камеры с совпадающим ID")}</option></select>`)}<p class="help" id="import-mode-help">${t("Совпадающие подключения сохраняются. Текущие камеры не удаляются.")}</p><div id="camera-import-preview"></div></div>`,
+      `<div class="form-stack"><div class="notice" id="import-feedback" role="status">${t("Выберите JSON, экспортированный из WVW.")}</div>${H.formField("Файл камер", '<input type="file" id="camera-import-file" class="field file-field" accept=".json,application/json">')}${H.formField("Режим импорта", `<select id="camera-import-mode" class="select"><option value="add">${t("Добавить новые камеры")}</option><option value="update">${t("Обновить камеры с совпадающим ID")}</option></select>`)}<p class="help" id="import-mode-help">${t("Совпадающие подключения сохраняются. Текущие камеры не удаляются.")}</p><div id="camera-import-preview"></div></div>`,
       `<span class="modal-note">JSON · 16 МБ</span><button class="btn btn-primary" id="camera-import-go" disabled>${icon("upload")}${t("Импортировать")}</button>`,
     );
     $("#camera-import-mode").onchange = () => {
@@ -58,7 +58,7 @@
           !Array.isArray(data.cameras) ||
           data.cameras.length > 4096
         )
-          throw new Error(t("Неверный файл камер VWSHub"));
+          throw new Error(t("Неверный файл камер WVW"));
         catalog = data;
         box.className = "notice";
         box.textContent = `${t("Камеры")}: ${data.cameras.length} · ${t("Группы")}: ${Array.isArray(data.groups) ? data.groups.length : 0}`;
@@ -67,7 +67,7 @@
             .slice(0, 12)
             .map(
               (c) =>
-                `<div>${icon("camera")}<span>${h(c.name || "—")}</span><small>${h(c.ip || "")}</small></div>`,
+                `<div>${icon("camera")}<span data-no-i18n>${h(c.name || "—")}</span><small>${h(c.ip || "")}</small></div>`,
             )
             .join(
               "",

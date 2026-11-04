@@ -23,23 +23,57 @@
       }[name] || name,
     );
   const titles = {
-    location: ["Дата и время", "Date and time"],
+    location: ["Время и синхронизация", "Time and synchronization"],
     ntp: ["NTP", "NTP"],
-    general: ["Общие", "General"],
+    general: ["Система", "System"],
     recording: ["Запись", "Recording"],
-    encoder: ["Сжатие", "Encoding"],
+    encoder: ["Каналы и видео", "Channels and video"],
     network: ["Сеть", "Network"],
     dhcp: ["DHCP", "DHCP"],
     dns: ["DNS", "DNS"],
-    osd: ["Маски и титры", "Overlays"],
+    osd: ["Названия и маски", "Names and privacy masks"],
     imaging: ["Изображение", "Image"],
     maintenance: ["Обслуживание", "Maintenance"],
     digital: ["Цифровые каналы", "Digital channels"],
-    storage: ["Носители", "Storage"],
-    users: ["Пользователи", "Accounts"],
+    storage: ["Хранилище", "Storage"],
+    users: ["Пользователи и доступ", "Accounts and access"],
     ptz: ["PTZ", "PTZ"],
-    info: ["Информация", "Information"],
+    info: ["Обзор устройства", "Device overview"],
   };
+  function createDialogFocus(doc) {
+    const stack=[];
+    const focusable=scope=>Array.from(scope.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled):not([type=hidden]),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])')).filter(node=>!node.disabled && !node.closest("[hidden],[inert]") && node.getClientRects().length);
+    const keydown=event=>{
+      const top=stack.at(-1);
+      if(!top?.scope.isConnected) return;
+      if(event.key==="Escape") {
+        event.preventDefault();event.stopPropagation();top.cancel();
+      } else if(event.key==="Tab") {
+        const nodes=focusable(top.scope),first=nodes[0],last=nodes.at(-1);
+        if(!first) {event.preventDefault();top.scope.focus();return;}
+        if(!top.scope.contains(doc.activeElement) || (event.shiftKey ? doc.activeElement===first : doc.activeElement===last)) {
+          event.preventDefault();event.stopPropagation();(event.shiftKey?last:first).focus();
+        }
+      }
+    };
+    doc.addEventListener("keydown",keydown,true);
+    return {
+      push(scope,cancel,returnTo=doc.activeElement) {
+        const entry={scope,cancel,returnTo};stack.push(entry);
+        return {close(restore=true) {
+          const index=stack.indexOf(entry);if(index<0)return;
+          const wasTop=index===stack.length-1;stack.splice(index,1);
+          if(!restore || !wasTop)return;
+          queueMicrotask(()=>{
+            const current=stack.at(-1);
+            if(returnTo?.isConnected && !returnTo.disabled && (!current || current.scope.contains(returnTo))) returnTo.focus();
+            else if(current?.scope.isConnected) (focusable(current.scope)[0] || current.scope).focus();
+          });
+        }};
+      },
+      dispose() {stack.length=0;doc.removeEventListener("keydown",keydown,true);}
+    };
+  }
   function mount(options) {
     const {
       root,
@@ -51,7 +85,7 @@
     const en = (options.language || document.documentElement.lang).startsWith(
         "en",
       ),
-      t = (ru, eng) => (en ? eng : ru);
+      t = (ru, eng) => window.vwsTranslate?.(ru) || (en ? eng : ru);
     const title = (key) => titles[key]?.[en ? 1 : 0] || key;
     let disposed = false,
       category = "all",
@@ -62,7 +96,10 @@
       selected = null,
       cap = null,
       active = "info",
-      ptzStop = null;
+      ptzStop = null,
+      dialogFocus = null,
+      dialogOrigin = null,
+      finishConfirmation = null;
     const cameraGroups = new Map();
     cameras.forEach((cam) => {
       const key = cam.recorder_id || [cam.protocol, cam.ip, cam.port].join("|");
@@ -112,6 +149,7 @@
       );
       return () => {};
     }
+    const focusScope=createDialogFocus(document);
     function board() {
       const counts = {
         all: devices.length,
@@ -165,7 +203,7 @@
         ? matches
             .map(
               (c) =>
-                `<div class="dv-card-wrap"><button type="button" class="dv-card" data-open-device="${esc(c.id)}"><span class="dv-card-icon">${svg(c.protocol === "dvrip" ? "device" : "camera")}</span><span class="dv-card-copy"><b>${esc(c.recorder_name || c.name)}</b><small>${esc(c.ip)} · ${c.protocol === "dvrip" ? "DVRIP" : "ONVIF"}</small><span>${c.members.length} ${t("канал(ов) в проекте", "project channel(s)")}</span></span><span class="dv-card-open">${t("Настроить", "Configure")} →</span></button><button type="button" class="icon-btn dv-rename" data-rename-recorder="${esc(c.id)}" title="${t("Имя регистратора", "Recorder name")}" aria-label="${t("Имя регистратора", "Recorder name")}">${options.hub?.icon("edit") || "✎"}</button></div>`,
+                `<div class="dv-card-wrap"><button type="button" class="dv-card" data-open-device="${esc(c.id)}"><span class="dv-card-icon">${svg(c.protocol === "dvrip" ? "device" : "camera")}</span><span class="dv-card-copy"><b data-no-i18n>${esc(c.recorder_name || c.name)}</b><small data-no-i18n>${esc(c.ip)} · ${c.protocol === "dvrip" ? "DVRIP" : "ONVIF"}</small><span>${c.members.length} ${t("канал(ов) в проекте", "project channel(s)")}</span></span><span class="dv-card-open">${t("Настроить", "Configure")} →</span></button><button type="button" class="icon-btn dv-rename" data-rename-recorder="${esc(c.id)}" title="${t("Имя регистратора", "Recorder name")}" aria-label="${t("Имя регистратора", "Recorder name")}">${options.hub?.icon("edit") || "✎"}</button></div>`,
             )
             .join("")
         : empty(
@@ -189,35 +227,42 @@
             open(devices.find((c) => c.id === b.dataset.openDevice))),
       );
     }
-    function close() {
+    function close(restoreFocus = true) {
       ++version;
+      finishConfirmation?.(false,false);
       ptzStop?.();
       ptzStop = null;
       aborter?.abort();
       dialog?.remove();
       dialog = null;
+      dialogFocus?.close(restoreFocus);
+      dialogFocus = null;
+      dialogOrigin = null;
     }
     function webURL(cam) {
       try {
         if (!cam.ip || /[\s/@?#\\]/.test(cam.ip)) return "";
         return new URL(
-          `http://${cam.ip.includes(":") ? "[" + cam.ip + "]" : cam.ip}${cam.web_port ? ":" + Number(cam.web_port) : ""}`,
+          `http://${cam.ip.includes(":") ? "[" + cam.ip + "]" : cam.ip}${(cam.web_port || (cam.protocol === "onvif" && cam.port)) ? ":" + Number(cam.web_port || cam.port) : ""}`,
         ).href;
       } catch (_) {
         return "";
       }
     }
     async function open(cam) {
-      close();
+      const origin=dialog ? dialogOrigin : document.activeElement;
+      close(false);
+      dialogOrigin=origin;
       selected = cam;
       active = "info";
       aborter = new AbortController();
       const generation = ++version;
       dialog = document.createElement("div");
       dialog.className = "dv-backdrop";
-      dialog.innerHTML = `<section class="dv-dialog" role="dialog" aria-modal="true" aria-labelledby="dv-dialog-title"><header class="dv-dialog-heading"><span class="dv-card-icon">${svg(cam.protocol === "dvrip" ? "device" : "camera")}</span><div><h2 id="dv-dialog-title">${esc(cam.recorder_name || cam.name)}</h2><p>${esc(cam.ip)} · ${cam.protocol === "dvrip" ? "XM / DVRIP" : "ONVIF"}</p></div><a class="btn btn-sm" data-web target="_blank" rel="noopener noreferrer">${svg("link")} ${t("Веб-интерфейс", "Web interface")}</a><button type="button" class="icon-btn" data-refresh aria-label="${t("Обновить", "Refresh")}">${svg("refresh")}</button><button type="button" class="icon-btn" data-close aria-label="${t("Закрыть", "Close")}">${svg("close")}</button></header><div class="dv-dialog-main" data-workspace>${busy()}</div></section>`;
+      dialog.innerHTML = `<section class="dv-dialog" role="dialog" aria-modal="true" aria-labelledby="dv-dialog-title" tabindex="-1"><header class="dv-dialog-heading"><span class="dv-card-icon">${svg(cam.protocol === "dvrip" ? "device" : "camera")}</span><div><h2 id="dv-dialog-title" data-no-i18n>${esc(cam.recorder_name || cam.name)}</h2><p data-no-i18n>${esc(cam.ip)} · ${cam.protocol === "dvrip" ? "XM / DVRIP" : "ONVIF"}</p></div><a class="btn btn-sm" data-web target="_blank" rel="noopener noreferrer">${svg("link")} ${t("Веб-интерфейс", "Web interface")}</a><button type="button" class="icon-btn" data-refresh aria-label="${t("Обновить", "Refresh")}">${svg("refresh")}</button><button type="button" class="icon-btn" data-close aria-label="${t("Закрыть", "Close")}">${svg("close")}</button></header><div class="dv-dialog-main" data-workspace>${busy()}</div></section>`;
       document.body.append(dialog);
-      q("[data-close]", dialog).onclick = close;
+      dialogFocus=focusScope.push(q(".dv-dialog",dialog),()=>close(),origin);
+      q("[data-close]", dialog).onclick = () => close();
       q("[data-refresh]", dialog).onclick = () => open(selected);
       const web = q("[data-web]", dialog),
         href = webURL(cam);
@@ -242,7 +287,7 @@
         tabs = xm
           ? [
               "info",
-              ...(cap.sections || []).map((s) => s.id),
+              ...(cap.sections || []).map((s) => s.id).filter((id) => !["ntp", "dhcp", "dns"].includes(id)),
               "storage",
               "users",
               ...(cap.capabilities?.ptz ? ["ptz"] : []),
@@ -252,6 +297,7 @@
               ...(cap.capabilities?.encoder ? ["encoder"] : []),
               ...(cap.capabilities?.imaging ? ["imaging"] : []),
               "network",
+              ...(cap.capabilities?.time || cap.capabilities?.ntp_read ? ["location"] : []),
               "users",
               ...(cap.capabilities?.ptz ? ["ptz"] : []),
             ];
@@ -271,6 +317,7 @@
       else if (active === "ptz") readPTZ(content);
       else if (xm) readConfig(content, active, Number(selected.channel || 0));
       else if (active === "network") readONVIFNetwork(content);
+      else if (active === "location") readONVIFTime(content);
       else readONVIFSettings(content, active);
     }
     const isCurrent = (content, generation) =>
@@ -281,36 +328,59 @@
           resolve(false);
           return;
         }
+        finishConfirmation?.(false,false);
+        const returnTo=document.activeElement;
         const panel = document.createElement("div");
         panel.className = "dv-confirm-backdrop";
-        panel.innerHTML = `<section class="dv-confirm" role="alertdialog" aria-modal="true"><div class="dv-confirm-icon">${svg("warning")}</div><h3>${t("Подтвердите действие", "Confirm operation")}</h3><p>${esc(warning)}</p>${phrase ? field(t("Введите точное имя устройства", "Type the exact device name"), `<input class="field" data-phrase autocomplete="off" placeholder="${esc(phrase)}">`) : ""}<label class="dv-accept"><input type="checkbox" data-accept> ${t("Я понимаю последствия и подтверждаю действие", "I understand and confirm this action")}</label><div class="dv-action-row"><button class="btn" data-cancel>${t("Отмена", "Cancel")}</button><button class="btn ${destructive ? "btn-danger" : "btn-primary"}" data-confirm disabled>${t("Подтвердить", "Confirm")}</button></div></section>`;
+        panel.innerHTML = `<section class="dv-confirm" role="alertdialog" aria-modal="true" aria-labelledby="dv-confirm-title" aria-describedby="dv-confirm-message" tabindex="-1"><div class="dv-confirm-icon">${svg("warning")}</div><h3 id="dv-confirm-title">${t("Подтвердите действие", "Confirm operation")}</h3><p id="dv-confirm-message">${esc(warning)}</p>${phrase ? field(t("Введите точное имя устройства", "Type the exact device name"), `<input class="field" data-phrase autocomplete="off" placeholder="${esc(phrase)}">`) : ""}<label class="dv-accept"><input type="checkbox" data-accept> ${t("Я понимаю последствия и подтверждаю действие", "I understand and confirm this action")}</label><div class="dv-action-row"><button class="btn" data-cancel>${t("Отмена", "Cancel")}</button><button class="btn ${destructive ? "btn-danger" : "btn-primary"}" data-confirm disabled>${t("Подтвердить", "Confirm")}</button></div></section>`;
         dialog.append(panel);
+        let settled=false;
+        const finish=(accepted,restore=true)=>{
+          if(settled)return;settled=true;
+          if(finishConfirmation===finish)finishConfirmation=null;
+          panel.remove();resolve(accepted);confirmationFocus.close(restore);
+        };
+        const confirmationFocus=focusScope.push(q(".dv-confirm",panel),()=>finish(false),returnTo);
+        finishConfirmation=finish;
         const validate = () =>
           (q("[data-confirm]", panel).disabled =
             !q("[data-accept]", panel).checked ||
             (phrase && q("[data-phrase]", panel).value !== phrase));
         q("[data-accept]", panel).onchange = validate;
         q("[data-phrase]", panel)?.addEventListener("input", validate);
-        q("[data-cancel]", panel).onclick = () => {
-          panel.remove();
-          resolve(false);
-        };
-        q("[data-confirm]", panel).onclick = () => {
-          panel.remove();
-          resolve(true);
-        };
+        q("[data-cancel]", panel).onclick = () => finish(false);
+        q("[data-confirm]", panel).onclick = () => finish(true);
         (q("[data-phrase]", panel) || q("[data-accept]", panel)).focus();
       });
     }
     function infoTable(data) {
-      if (!data || !Object.keys(data).length)
-        return empty(t("Данные не предоставлены", "No information reported"));
-      return `<dl class="dv-info">${Object.entries(data)
-        .map(
-          ([key, value]) =>
-            `<div><dt>${esc(en ? key : { Manufacturer: "Производитель", Model: "Модель", DeviceType: "Тип", SerialNumber: "Серийный номер / Cloud ID", SerialNo: "Серийный номер / Cloud ID", SoftWareVersion: "Прошивка", FirmwareVersion: "Прошивка", BuildTime: "Дата прошивки", RunTime: "Время работы", VideoInChannel: "Видеоканалы", ChannelNum: "Каналы" }[key] || key)}</dt><dd>${esc(typeof value === "object" ? JSON.stringify(value, null, 2) : value)}</dd></div>`,
-        )
-        .join("")}</dl>`;
+      const labels = {
+        Manufacturer:["Производитель","Manufacturer"], Model:["Модель","Model"], DeviceType:["Тип устройства","Device type"],
+        SerialNumber:["Серийный номер","Serial number"], SerialNo:["Серийный номер","Serial number"],
+        SoftWareVersion:["Прошивка","Firmware"], FirmwareVersion:["Прошивка","Firmware"],
+        HardWare:["Аппаратная платформа","Hardware platform"], HardWareVersion:["Версия оборудования","Hardware version"], Hardware:["Аппаратная платформа","Hardware platform"], HardwareVersion:["Версия оборудования","Hardware version"], ProtocolVersion:["Версия протокола","Protocol version"],
+        BuildTime:["Дата прошивки","Build time"], VideoInChannel:["Аналоговые каналы","Analog inputs"], DigChannel:["IP-каналы","IP inputs"],
+        ChannelNum:["Каналы","Channels"], AudioInChannel:["Аудиовходы","Audio inputs"],
+        HostIP:["IP-адрес","IP address"], GateWay:["Шлюз","Gateway"], Gateway:["Шлюз","Gateway"], Submask:["Маска подсети","Subnet mask"],
+        HostName:["Сетевое имя","Network name"], MAC:["MAC-адрес","MAC address"], HttpPort:["HTTP-порт","HTTP port"],
+        TCPPort:["Порт управления","Management port"], UDPPort:["UDP-порт","UDP port"], RTSPPort:["RTSP-порт","RTSP port"],
+      };
+      const entries=Object.entries(data || {}).filter(([key,value])=>labels[key] && value!==null && typeof value!=="object");
+      if (!entries.length)return empty(t("Данные не предоставлены", "No information reported"));
+      return `<dl class="dv-info">${entries.map(([key,value])=>`<div><dt>${esc(t(...labels[key]))}</dt><dd data-no-i18n>${esc(value)}</dd></div>`).join("")}</dl>`;
+    }
+
+    function deviceClock(value) {
+      if(typeof value==="string")return value.replace("T"," ");
+      const clock=value?.LocalDateTime || value?.UTCDateTime;
+      const d=clock?.Date, time=clock?.Time;
+      if(!d || !time)return "—";
+      const pad=n=>String(n).padStart(2,"0");
+      return `${d.Year}-${pad(d.Month)}-${pad(d.Day)} ${pad(time.Hour)}:${pad(time.Minute)}:${pad(time.Second)}${value.UTCDateTime && !value.LocalDateTime ? " UTC" : ""}`;
+    }
+    function serviceStates(services) {
+      const labels={network:["Сеть","Network"],management:["Управление","Management"],live:["Живое видео","Live video"],archive:["Архив","Archive"],audio:["Аудио","Audio"]};
+      return `<dl class="dv-service-states">${Object.entries(labels).map(([key,label])=>`<div><dt>${esc(t(...label))}</dt><dd class="${services?.[key]==="confirmed" ? "confirmed" : "unknown"}">${esc(services?.[key]==="confirmed" ? t("Подтверждено","Confirmed") : t("Не проверено","Not checked"))}</dd></div>`).join("")}</dl>`;
     }
     async function readInfo(content) {
       const generation = version;
@@ -318,7 +388,12 @@
       try {
         const data = await request("/api/device/system", { action: "read" });
         if (!isCurrent(content, generation)) return;
-        content.innerHTML = `<div class="dv-two-columns"><section class="dv-panel"><h4>${t("Об устройстве", "Device details")}</h4>${infoTable(data.system_info)}</section><section class="dv-panel"><h4>${t("Время и обслуживание", "Time and maintenance")}</h4><p class="dv-clock">${esc(typeof data.time === "object" ? JSON.stringify(data.time, null, 2) : data.time || "—")}</p><div class="dv-action-row"><button class="btn" data-time ${cap.capabilities?.time ? "" : "disabled"}>${t("Синхронизировать время", "Synchronize time")}</button><button class="btn btn-danger" data-reboot ${cap.capabilities?.reboot ? "" : "disabled"}>${t("Перезагрузить устройство", "Reboot device")}</button></div><p class="dv-muted">${t("Изменение времени влияет на временную шкалу архива. Перезагрузка временно отключит все каналы.", "Clock changes affect archive timestamps. A reboot temporarily disconnects every channel.")}</p></section><section class="dv-panel dv-wide"><h4>${t("Сетевые сведения", "Network details")}</h4>${infoTable(Array.isArray(data.network) ? { interfaces: data.network } : data.network || {})}</section></div>`;
+        const httpPort=Number(data.network_display?.HttpPort || data.network_display?.HTTPPort);
+        if(Number.isInteger(httpPort) && httpPort>=1 && httpPort<=65535){
+          const link=q("[data-web]",dialog),url=webURL({...selected,web_port:httpPort});
+          if(link && url)link.href=url;
+        }
+        content.innerHTML = `<div class="dv-two-columns"><section class="dv-panel"><h4>${t("Об устройстве", "Device details")}</h4>${infoTable(data.system_info)}${serviceStates(data.services)}</section><section class="dv-panel"><h4>${t("Сетевые сведения", "Network details")}</h4>${infoTable(data.network_display || (Array.isArray(data.network) ? {} : data.network || {}))}</section><section class="dv-panel dv-wide"><h4>${t("Время и обслуживание", "Time and maintenance")}</h4><p class="dv-clock">${esc(deviceClock(data.time))}</p><div class="dv-action-row"><button class="btn" data-time ${cap.capabilities?.time && data.time != null ? "" : "disabled hidden"}>${t("Синхронизировать время", "Synchronize time")}</button><button class="btn btn-danger" data-reboot ${cap.capabilities?.reboot ? "" : "disabled"}>${t("Перезапустить регистратор", "Restart recorder")}</button></div><p class="dv-muted">${t("Изменение времени влияет на временную шкалу архива. Перезагрузка временно отключит все каналы.", "Clock changes affect archive timestamps. A reboot temporarily disconnects every channel.")}</p></section></div>`;
         q("[data-time]", content).onclick = async () => {
           if (
             !(await confirmAction(
@@ -333,20 +408,20 @@
             p = (n) => String(n).padStart(2, "0"),
             local = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
           try {
-            await request("/api/device/system", {
+            const result=await request("/api/device/system", {
               action: "time",
               utc: now.toISOString(),
               local_time: local,
             });
-            onSuccess(
-              t("Команда установки времени отправлена", "Time update sent"),
-            );
+            (result.saved === false ? onError : onSuccess)(result.message || t("Команда установки времени отправлена", "Time update sent"));
             readInfo(content);
           } catch (e) {
             fail(e);
           }
         };
-        q("[data-reboot]", content).onclick = async () => {
+        q("[data-reboot]", content).onclick = async (event) => {
+          const trigger=event.currentTarget;
+          if(trigger.disabled)return;
           if (
             !(await confirmAction(
               t(
@@ -358,15 +433,22 @@
           )
             return;
           try {
-            await request("/api/device/system", {
+            trigger.disabled=true;
+            const result=await request("/api/device/system", {
               action: "reboot",
               confirm: true,
+              device_name: selected.recorder_name || selected.name,
             });
             onSuccess(
-              t("Команда перезагрузки отправлена", "Reboot command sent"),
+              result.message || t("Команда перезапуска отправлена; завершение ещё не подтверждено", "Restart requested; completion is not confirmed yet"),
             );
+            const check=document.createElement("button");
+            check.className="btn"; check.type="button";
+            check.textContent=t("Проверить доступность после перезапуска", "Check availability after restart");
+            check.onclick=()=>readInfo(content);
+            trigger.after(check);
           } catch (e) {
-            fail(e);
+            trigger.disabled=false; fail(e);
           }
         };
       } catch (e) {
@@ -405,7 +487,7 @@
       if (f.type === "boolean")
         return `<label class="dv-toggle"><input type="checkbox" ${attr} ${f.value ? "checked" : ""}><span>${t("Включено", "Enabled")}</span></label>`;
       if (f.type === "select")
-        return `<select class="select" ${attr}>${f.options.map((v) => `<option ${v === f.value ? "selected" : ""} value="${esc(v)}">${esc({ ConfigRecord: t("По расписанию", "Scheduled"), ManualRecord: t("Ручная запись", "Manual recording"), ClosedRecord: t("Остановить запись", "Stop recording"), OverWrite: t("Перезаписывать старые", "Overwrite oldest"), StopRecord: t("Остановить запись", "Stop recording"), Never: t("Никогда", "Never") }[v] || v)}</option>`).join("")}</select>`;
+        return `<select class="select" ${attr}>${f.options.map((v) => `<option data-no-i18n ${v === f.value ? "selected" : ""} value="${esc(v)}">${esc({ ConfigRecord: t("По расписанию", "Scheduled"), ManualRecord: t("Ручная запись", "Manual recording"), ClosedRecord: t("Остановить запись", "Stop recording"), OverWrite: t("Перезаписывать старые", "Overwrite oldest"), StopRecord: t("Остановить запись", "Stop recording"), Never: t("Никогда", "Never") }[v] || v)}</option>`).join("")}</select>`;
       if (f.type === "schedule") {
         const parts = /^(\d+) ([\d:]+)-([\d:]+)$/.exec(f.value);
         return `<div class="dv-schedule-value" data-schedule="${i}"><input class="field" type="number" min="0" max="65535" value="${parts?.[1] || 0}" aria-label="${t("Маска включения", "Enabled mask")}" data-mask><input class="field" type="text" pattern="[0-2][0-9]:[0-5][0-9]:[0-5][0-9]" value="${parts?.[2] || "00:00:00"}" aria-label="${t("Начало", "Start")}" data-start><span>—</span><input class="field" type="text" value="${parts?.[3] || "24:00:00"}" aria-label="${t("Конец", "End")}" data-end></div>`;
@@ -418,16 +500,15 @@
       try {
         const data = await request("/api/device/config", { section, channel });
         if (!isCurrent(content, generation)) return;
-        const fields = data.fields || [];
-        content.innerHTML = `<div class="dv-scope-row"><span class="dv-scope">${data.scope === "channel" ? t("Настройки выбранного канала", "Selected channel settings") : data.scope === "interface" ? t("Сетевые интерфейсы устройства", "Device network interfaces") : t("Настройки всего устройства", "Whole-device settings")}</span>${data.channel_count ? field(t("Канал", "Channel"), `<select class="select" data-config-channel>${Array.from({ length: data.channel_count }, (_, i) => `<option value="${i}" ${i === channel ? "selected" : ""}>${t("Канал", "Channel")} ${i + 1}</option>`).join("")}</select>`) : ""}${section === "network" ? '<div class="dv-network-subtabs"><button class="btn btn-sm" data-subsection="dhcp">DHCP</button><button class="btn btn-sm" data-subsection="dns">DNS</button></div>' : ""}</div>${["network", "dhcp", "dns", "digital"].includes(section) ? note(t("Смена сетевых параметров может прервать соединение. После смены IP обновите адрес подключения в разделе «Камеры».", "Network changes may disconnect the device. Update its connection address in Cameras afterward.")) : ""}${section === "maintenance" ? note(t("Автоматическое удаление файлов удаляет старые записи без возможности восстановления. Для включения потребуется подтверждение имени устройства.", "Automatic deletion permanently removes older recordings. Enabling it requires the device name.")) : ""}<form data-config-form><div class="dv-fields">${fields.map((f, i) => field(en ? f.key.replace(/([a-z])([A-Z])/g, "$1 $2") : f.label, configInput(f, i), f.context || contextLabel(f))).join("")}</div><footer class="dv-form-footer"><span>${t("Неизвестные поля доступны только для чтения. Сохраняются только изменения.", "Unknown fields are read-only. Only changes are saved.")}</span><button class="btn btn-primary" type="submit" ${fields.some((f) => f.editable) ? "" : "disabled"}>${svg("check")} ${t("Применить", "Apply changes")}</button></footer></form>`;
+        const fields = (data.fields || []).filter(f => f.display !== false);
+        content.innerHTML = `<div class="dv-scope-row"><span class="dv-scope">${data.scope === "channel" ? t("Настройки выбранного канала", "Selected channel settings") : data.scope === "interface" ? t("Сетевые интерфейсы устройства", "Device network interfaces") : t("Настройки всего устройства", "Whole-device settings")}</span>${data.channel_count ? field(t("Канал", "Channel"), `<select class="select" data-config-channel>${Array.from({ length: data.channel_count }, (_, i) => `<option value="${i}" ${i === channel ? "selected" : ""}>${t("Канал", "Channel")} ${i + 1}</option>`).join("")}</select>`) : ""}${["location","ntp"].includes(section) ? '<div class="dv-network-subtabs"><button type="button" class="btn btn-sm" data-subsection="location">Дата и время</button><button type="button" class="btn btn-sm" data-subsection="ntp">NTP</button></div>' : ""}${section === "network" ? '<div class="dv-network-subtabs"><button class="btn btn-sm" data-subsection="dhcp">DHCP</button><button class="btn btn-sm" data-subsection="dns">DNS</button></div>' : ""}</div>${["network", "dhcp", "dns", "digital"].includes(section) ? note(t("Смена сетевых параметров может прервать соединение. После смены IP обновите адрес подключения в разделе «Камеры».", "Network changes may disconnect the device. Update its connection address in Cameras afterward.")) : ""}${section === "maintenance" ? note(t("Автоматическое удаление файлов удаляет старые записи без возможности восстановления. Для включения потребуется подтверждение имени устройства.", "Automatic deletion permanently removes older recordings. Enabling it requires the device name.")) : ""}<form data-config-form>${!fields.length ? note(t("Подтверждённых параметров для редактирования нет. Неизвестные настройки сохраняются без изменений.", "No verified editable settings. Unknown configuration is preserved.")) : ""}<div class="dv-fields">${fields.map((f, i) => field(t(f.label, f.key.replace(/([a-z])([A-Z])/g, "$1 $2")), configInput(f, i), f.context || contextLabel(f))).join("")}</div><footer class="dv-form-footer"><span>${t("Показаны поддержанные параметры. Неизвестные поля сохраняются без изменений.", "Only verified fields are shown. Unknown configuration is preserved.")}</span><button class="btn btn-primary" type="submit" ${fields.some((f) => f.editable) ? "" : "disabled"}>${svg("check")} ${t("Применить", "Apply changes")}</button></footer></form>`;
         q("[data-config-channel]", content)?.addEventListener("change", (e) =>
           readConfig(content, section, Number(e.target.value)),
         );
-        qa("[data-subsection]", content).forEach(
-          (b) =>
-            (b.onclick = () =>
-              readConfig(content, b.dataset.subsection, channel)),
-        );
+        qa("[data-subsection]", content).forEach((b)=>{
+          b.setAttribute("aria-pressed",String(b.dataset.subsection===section));
+          b.onclick=()=>readConfig(content,b.dataset.subsection,channel);
+        });
         q("[data-config-form]", content).onsubmit = async (e) => {
           e.preventDefault();
           const changes = [];
@@ -562,7 +643,7 @@
         if (!isCurrent(content, generation)) return;
         const users = data.users || [],
           groups = data.groups || [];
-        content.innerHTML = `${note(t("Это учётные записи самого оборудования. После смены пароля текущего подключения обновите его в разделе «Камеры».", "These accounts belong to the hardware. After changing its connection account password, update Cameras."))}<div class="dv-users-table">${users.map((u) => `<div><b>${esc(u.Name || u.Username)}</b><span>${esc(u.Group || u.UserLevel || "—")}</span><small>${u.Reserved ? t("Зарезервирован", "Reserved") : ""}</small></div>`).join("")}</div><form data-user-form><div class="dv-fields">${field(t("Действие", "Action"), `<select class="select" name="action"><option value="create">${t("Создать", "Create")}</option><option value="update">${t("Изменить группу", "Change group")}</option><option value="password">${t("Изменить пароль", "Change password")}</option><option value="delete">${t("Удалить", "Delete")}</option></select>`)}${field(t("Логин устройства", "Device login"), '<input class="field" name="username" autocomplete="off" required maxlength="32">')}${field(t("Группа / роль", "Group / role"), `<select class="select" name="group">${groups.map((g) => `<option value="${esc(g.Name)}">${esc(g.Name)}</option>`).join("")}</select>`)}${field(t("Новый пароль", "New password"), '<input class="field" type="password" name="password" autocomplete="new-password">')}${data.protocol === "dvrip" ? field(t("Прежний пароль (для смены)", "Old password (when changing)"), '<input class="field" type="password" name="old_password" autocomplete="off">') : ""}${field(t("Комментарий", "Comment"), '<input class="field" name="comment" maxlength="100">')}</div><footer class="dv-form-footer"><span>${t("Изменение применяется к выбранному устройству.", "Changes apply to this device.")}</span><button class="btn btn-primary" type="submit">${t("Выполнить", "Apply")}</button></footer></form>`;
+        content.innerHTML = `${note(t("Это учётные записи самого оборудования. После смены пароля текущего подключения обновите его в разделе «Камеры».", "These accounts belong to the hardware. After changing its connection account password, update Cameras."))}<div class="dv-users-table">${users.map((u) => `<div><b data-no-i18n>${esc(u.Name || u.Username)}</b><span data-no-i18n>${esc(u.Group || u.UserLevel || "—")}</span><small>${u.Reserved ? t("Зарезервирован", "Reserved") : ""}</small></div>`).join("")}</div><form data-user-form><div class="dv-fields">${field(t("Действие", "Action"), `<select class="select" name="action"><option value="create">${t("Создать", "Create")}</option><option value="update">${t("Изменить группу", "Change group")}</option><option value="password">${t("Изменить пароль", "Change password")}</option><option value="delete">${t("Удалить", "Delete")}</option></select>`)}${field(t("Логин устройства", "Device login"), '<input class="field" name="username" autocomplete="off" required maxlength="32">')}${field(t("Группа / роль", "Group / role"), `<select class="select" name="group">${groups.map((g) => `<option data-no-i18n value="${esc(g.Name)}">${esc(g.Name)}</option>`).join("")}</select>`)}${field(t("Новый пароль", "New password"), '<input class="field" type="password" name="password" autocomplete="new-password">')}${data.protocol === "dvrip" ? field(t("Прежний пароль (для смены)", "Old password (when changing)"), '<input class="field" type="password" name="old_password" autocomplete="off">') : ""}${field(t("Комментарий", "Comment"), '<input class="field" name="comment" maxlength="100">')}</div><footer class="dv-form-footer"><span>${t("Изменение применяется к выбранному устройству.", "Changes apply to this device.")}</span><button class="btn btn-primary" type="submit">${t("Выполнить", "Apply")}</button></footer></form>`;
         q("[data-user-form]", content).onsubmit = async (e) => {
           e.preventDefault();
           const form = e.currentTarget,
@@ -653,11 +734,12 @@
               } else body[k] = Number(v);
             });
             try {
-              await request("/api/device/" + kind, {
+              const result = await request("/api/device/" + kind, {
                 profile_token: profile,
                 settings: body,
               });
-              onSuccess(t("Настройки применены", "Settings applied"));
+              if (result.saved === false) onError(result.message);
+              else onSuccess(result.message || t("Настройки применены", "Settings applied"));
               read();
             } catch (error) {
               fail(error);
@@ -667,6 +749,36 @@
           if (isCurrent(content, generation)) box.innerHTML = empty(e.message);
           fail(e);
         }
+      }
+    }
+    async function readONVIFTime(content) {
+      const generation = version;
+      content.innerHTML = busy();
+      try {
+        const data = await request("/api/device/onvif/ntp");
+        if (!isCurrent(content, generation)) return;
+        content.innerHTML = note(t("Изменение синхронизации влияет на временную шкалу архива. Порт и интервал NTP не входят в стандарт ONVIF и здесь не изменяются.", "Synchronization changes affect archive timestamps. NTP port and interval are outside this ONVIF operation and are preserved.")) +
+          `<form data-onvif-ntp><div class="dv-fields">${field(t("Синхронизация NTP", "NTP synchronization"), `<label class="dv-toggle"><input type="checkbox" name="enabled" ${data.enabled === true ? "checked" : ""} ${data.mode_writable ? "" : "disabled"}><span>${data.enabled === null ? t("Режим не подтверждён", "Mode not reported") : t("Использовать NTP", "Use NTP")}</span></label>`)}${field(t("Серверы из DHCP", "Servers from DHCP"), `<label class="dv-toggle"><input type="checkbox" name="from_dhcp" ${data.from_dhcp ? "checked" : ""} ${data.writable ? "" : "disabled"}><span>DHCP</span></label>`)}${field(t("NTP-серверы", "NTP servers"), `<textarea class="field" name="servers" rows="4" spellcheck="false" data-no-i18n ${data.writable ? "" : "readonly"}>${esc((data.servers || []).join("\n"))}</textarea>`, t("IP-адрес или DNS-имя, каждый сервер с новой строки", "IP address or DNS name, one server per line"))}</div>${data.dhcp_servers?.length ? `<p class="dv-muted">${t("Получено из DHCP", "Received from DHCP")}: <span data-no-i18n>${esc(data.dhcp_servers.join(", "))}</span></p>` : ""}<footer class="dv-form-footer"><span>${data.writable ? `${t("Максимум серверов", "Maximum servers")}: ${data.max_servers}` : t("Устройство не подтвердило редактирование NTP. Доступно только чтение.", "The device did not confirm NTP editing. Read only.")}</span><button type="submit" class="btn btn-primary" ${data.writable ? "" : "disabled"}>${t("Применить", "Apply changes")}</button></footer></form>`;
+        const form = q("[data-onvif-ntp]", content);
+        form.onsubmit = async (event) => {
+          event.preventDefault();
+          const settings = {}, f = form.elements;
+          if (f.from_dhcp.checked !== data.from_dhcp) settings.from_dhcp = f.from_dhcp.checked;
+          const servers = f.servers.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+          if (JSON.stringify(servers) !== JSON.stringify(data.servers)) settings.servers = servers;
+          if (data.mode_writable && f.enabled.checked !== data.enabled) settings.enabled = f.enabled.checked;
+          if (!Object.keys(settings).length) { onSuccess(t("Нет изменений", "No changes")); return; }
+          if (!(await confirmAction(t("Изменить синхронизацию времени устройства? Это может повлиять на временную шкалу архива.", "Change device time synchronization? This may affect archive timestamps.")))) return;
+          const submit = q('[type="submit"]', form); submit.disabled = true;
+          try {
+            const result = await request("/api/device/onvif/ntp", {settings, revision:data.revision, confirm:true});
+            (result.saved === false ? onError : onSuccess)(result.message);
+            if (isCurrent(content, generation)) readONVIFTime(content);
+          } catch (error) { submit.disabled = false; fail(error); }
+        };
+      } catch (error) {
+        if (isCurrent(content, generation)) content.innerHTML = empty(error.message);
+        fail(error);
       }
     }
     async function readONVIFNetwork(content) {
@@ -728,7 +840,7 @@
               confirm: true,
               device_name: selected.recorder_name || selected.name,
             });
-            onSuccess(result.message);
+            (result.saved === false ? onError : onSuccess)(result.message);
           } catch (error) {
             fail(error);
           }
@@ -748,20 +860,16 @@
         caps: cap,
       });
     }
-    const escapeClose = (e) => {
-      if (e.key === "Escape" && dialog) close();
-    };
-    document.addEventListener("keydown", escapeClose);
     board();
     return () => {
       disposed = true;
-      close();
-      document.removeEventListener("keydown", escapeClose);
+      close(false);
+      focusScope.dispose();
     };
   }
   function mountPTZ(root, camera, options = {}) {
     const en = document.documentElement.lang.startsWith("en"),
-      t = (ru, eng) => (en ? eng : ru);
+      t = (ru, eng) => window.vwsTranslate?.(ru) || (en ? eng : ru);
     const controller = new AbortController();
     let disposed = false,
       moving = false,
@@ -1003,5 +1111,6 @@
     ColorSaturation: "Насыщенность",
     Sharpness: "Резкость",
   };
-  window.VWSDevices = { mount, mountPTZ };
+  if(typeof module==="object" && module.exports)module.exports={createDialogFocus};
+  else window.VWSDevices = { mount, mountPTZ };
 })();

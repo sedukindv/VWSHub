@@ -168,7 +168,11 @@
       ),
     };
   }
+  function timelineTickCount(width, span) {
+    return clamp(Math.floor(Math.max(0, Number(width) || 0) / (span < 300000 ? 104 : 92)), 1, 12);
+  }
   return {
+    timelineTickCount,
     clamp,
     time,
     local,

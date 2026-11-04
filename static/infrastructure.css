@@ -61,8 +61,8 @@
   font-size: 12px;
 }
 .search-field:focus-within {
-  outline: 2px solid var(--accent-dim);
-  border-color: var(--accent);
+  outline: 2px solid var(--focus-color,var(--accent));
+  border-color: var(--focus-color,var(--accent));
 }
 .search-field > input::placeholder {
   color: var(--muted);
@@ -114,7 +114,7 @@
   padding: 3px 8px;
   font-size: 10px;
   line-height: 1.45;
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--accent-dim);
   white-space: normal;
 }
@@ -124,17 +124,17 @@
   background: var(--surface-alt);
 }
 .infra-badge.online {
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 9%, var(--surface));
+  color: var(--success-text, var(--success));
+  background: var(--success-bg, var(--surface));
   border-color: color-mix(in srgb, var(--success) 22%, var(--line));
 }
 .infra-badge.offline {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger-text, var(--danger));
+  background: var(--danger-bg, var(--surface));
 }
 .infra-badge.warning {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+  color: var(--warning-text, var(--warning));
+  background: var(--warning-bg, var(--surface));
 }
 .infra-toolbar {
   display: flex;
@@ -336,8 +336,8 @@
   white-space: pre-wrap;
 }
 .infra-feedback.error {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger-text, var(--danger));
+  background: var(--danger-bg, var(--surface));
 }
 .infra-preview-totals {
   margin: 20px 0 12px;
@@ -539,9 +539,9 @@
   color: var(--icon-color, var(--muted));
 }
 .infra-icon-grid .selected {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: var(--accent-dim);
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--focus-color, var(--accent));
 }
 .infra-icon-pages {
   display: flex;
@@ -796,7 +796,7 @@
   cursor: pointer;
 }
 .infra-name-link:hover {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 .infra-spaces-table .actions-column {
   width: 145px;
@@ -940,7 +940,7 @@
   height: 17px;
   border-radius: 4px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-contrast,white);
 }
 .brand-check-preview .lucide {
   width: 13px;
@@ -1129,4 +1129,10 @@ thead.infra-list-head {
   .infra-policy-toolbar .search-field {
     flex-basis: 100%;
   }
+}
+
+.infra-password:focus-within {
+  border-color:var(--focus-color,var(--accent));
+  outline:2px solid var(--focus-color,var(--accent));
+  outline-offset:2px;
 }
