@@ -40,7 +40,7 @@ for (const theme of ['light', 'dark']) for (const width of [320, 1440]) {
           await expect(page.locator('#arc-search')).toBeEnabled();
         } else {
           await expect(viewer).toHaveAttribute('data-player-state', 'ready');
-          await page.locator('#arc-play').click();
+          await page.locator('#arc-state [data-action="play"]').click();
           await expect(viewer).toHaveAttribute('data-player-state', state === 'slow' ? 'loading' : 'error');
           await expect(page.locator('#arc-state')).toBeVisible();
           if (state === 'slow') await expect(viewer).toHaveAttribute('aria-busy', 'true');

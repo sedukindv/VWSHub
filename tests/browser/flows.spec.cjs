@@ -57,7 +57,7 @@ test('synthetic archive decodes real MP4, plays, pauses, zooms and stops on navi
   const video = page.locator('#arc-video');
   const [playback] = await Promise.all([
     page.waitForResponse(r => new URL(r.url()).pathname === '/api/playback' && [200, 206].includes(r.status())),
-    page.locator('#arc-play').click(),
+    page.locator('#arc-state [data-action="play"]').click(),
   ]);
   expect(playback.headers()['content-type']).toContain('video/mp4');
   await expect.poll(() => video.evaluate(v => v.readyState)).toBeGreaterThanOrEqual(2);

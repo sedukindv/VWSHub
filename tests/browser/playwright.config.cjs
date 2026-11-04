@@ -16,6 +16,7 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  maxFailures: process.env.CI ? 3 : 0,
   timeout: 60000,
   expect: { timeout: 10000, toHaveScreenshot: { animations: 'disabled', caret: 'hide', maxDiffPixelRatio: 0.001 } },
   // Missing images must fail comparison, never silently become accepted baselines.
