@@ -6,8 +6,8 @@ implementations. It contains 82 sources, 7 physical devices, 27 spaces and a rea
 FFmpeg-generated MP4/HLS recording. No physical camera is contacted. Browser
 requests outside the fixture origin are blocked and fail the test.
 
-The suite has **201 functional tests**: 162 page/width/theme combinations,
-18 dialog workflows, 3 authentication/playback flows, 2 branding persistence flows, and 16 archive state tests.
+The suite has **202 functional tests**: 162 page/width/theme combinations,
+18 dialog workflows, 3 authentication/playback flows, 2 branding persistence flows, 1 background navigation flow, and 16 archive state tests.
 There are also **162 separately tagged visual comparisons**.
 
 ## Install and run on Linux CI
@@ -121,8 +121,8 @@ failure. All generated artifacts and node_modules are ignored by git.
 ## Verification status of this contribution
 
 The JavaScript files were checked with `node --check`. The installed pinned
-Playwright runner successfully discovered all 363 tests using `test --list`
-(201 functional and 162 visual), which starts neither a browser nor the fixture
+Playwright runner successfully discovered all 364 tests using `test --list`
+(202 functional and 162 visual), which starts neither a browser nor the fixture
 server. No CLI browser was launched
 in the restricted Windows environment (known browser spawn EPERM / absent browser
 binary). These newly authored tests and goldens must be executed/reviewed on Linux
@@ -156,3 +156,5 @@ The fixture generates and FFprobe-verifies an actual HEVC source, remuxes it to 
 
 
 Before the new manual workflow reaches the default branch, the existing **Tests** workflow can also be dispatched explicitly on a `release-*` branch. After its functional checks pass, its `browser-visual-review` job generates unapproved candidates if `snapshots/` is absent; when committed images exist it compares with updates disabled. The job has read-only repository permissions and never commits images. Review every candidate and commit the approved images separately before calling the result a visual-regression pass. Ordinary push/PR runs never generate or update goldens.
+
+An explicit `[visual review]` commit marker on a `release-*` branch also requests the read-only visual-review job. It follows the same candidate/review/compare rules; ordinary commits never update goldens.
