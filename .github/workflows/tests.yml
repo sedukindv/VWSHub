@@ -87,7 +87,6 @@ jobs:
           retention-days: 14
 
   browser-visual-review:
-    if: (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[visual review]')) && startsWith(github.ref_name, 'release-')
     needs: [regression, browser-functional]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -95,6 +94,7 @@ jobs:
       CI: 'true'
       WVW_PYTHON: python
       PYTHONIOENCODING: utf-8
+      WVW_VISUAL_CANDIDATES: ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[visual review]')) && startsWith(github.ref_name, 'release-') }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -113,15 +113,19 @@ jobs:
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
       - working-directory: tests/browser
         run: npx --no-install playwright install --with-deps chromium
-      - name: Explicit manual visual review; no baseline acceptance or repository writes
+      - name: Compare reviewed images; candidate generation requires an explicit request
         working-directory: tests/browser
         shell: bash
         run: |
           if python -c "from pathlib import Path; raise SystemExit(not any(Path('snapshots').rglob('*.png')))"; then
             npm run test:visual
           else
+            if [ "$WVW_VISUAL_CANDIDATES" != 'true' ]; then
+              echo 'Reviewed screenshots are missing. Automatic CI cannot generate or accept them.' >&2
+              exit 1
+            fi
             npm run visual:update
-            echo 'Candidate images generated. Human review and a separate commit are required before comparison.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Candidate images generated. Visual review and a separate commit are required before comparison.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload visual comparison or unapproved candidate evidence
         if: always()
