@@ -1,0 +1,12 @@
+{
+  "name": "wvw-hevc-assets",
+  "version": "0.9.0",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@hevcjs/core": "1.7.0",
+    "@hevcjs/hlsjs-plugin": "0.1.12",
+    "esbuild": "0.28.2"
+  },
+  "overrides": { "mp4box": "2.4.1" }
+}
