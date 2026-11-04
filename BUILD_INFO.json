@@ -42,7 +42,7 @@
   },
   "hevc_assets_manifest": "static/vendor/hevc/manifest.json",
   "files_sha256": {
-    ".gitattributes": "6809b6424c60e67da82315d72c96fdb0c25feedd77c501824673d4c9f76a7bc2",
+    ".gitattributes": "c41f87f1da45c697ac2638f080a5dfbba0e759930e950d80e9a1d90813404ed0",
     ".github/workflows/hevc-browser.yml": "5987884be7c150a4edcbc73423568b2c5e67e5da659247be950b47b957fdc18d",
     ".github/workflows/tests.yml": "d8c3f8a74ad8b941e4b76bb192ef33d2cdadc0df2886aa4d896179e762986839",
     ".github/workflows/visual-review.yml": "2a2c693d00300dcc435dba977a2486424d9676cec38495d9b392457d580e33c2",
