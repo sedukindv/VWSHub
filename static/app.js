@@ -654,7 +654,7 @@
             }),
           );
         } else if (!document.querySelector("#modal-root .modal, #brand-form[data-dirty=true], #settings-form[data-dirty=true]")) {
-          await showView(state.view);
+          await showView(state.view, { preserveMenu: true });
         }
       }
     } catch (_) {
@@ -672,7 +672,7 @@
     ++pageGeneration;
     state.view = view;
     document.body.dataset.view = view;
-    document.body.classList.remove("menu-open");
+    if (!extra.preserveMenu) document.body.classList.remove("menu-open");
     renderShell();
     const main = $("#main-content");
     try {
