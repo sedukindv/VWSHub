@@ -284,6 +284,8 @@ Live Audio включается только после положительно
 
 ## Проверки
 
+Подробный [итоговый отчёт 0.9.0](docs/RELEASE_0.9.0.md) содержит реализованные функции, изменения файлов, ограничения и порядок обновления. Фактические результаты запусков находятся в [TEST_REPORT.md](TEST_REPORT.md).
+
 ```sh
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
